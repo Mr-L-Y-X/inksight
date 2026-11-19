@@ -1,5 +1,5 @@
 #include "ota.h"
-#include "network.h"
+#include "network_api.h"
 #include "display.h"
 #include "config.h"
 #include "storage.h"

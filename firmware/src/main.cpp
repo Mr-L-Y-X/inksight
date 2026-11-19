@@ -23,7 +23,7 @@
 #include "audio_codec.h"
 #include "audio_service.h"
 #endif
-#include "network.h"
+#include "network_api.h"
 #include "storage.h"
 #include "portal.h"
 
@@ -168,6 +168,127 @@ static int effectiveSleepMinutes() {
 #endif
 }
 
+// ── Button-polled sleep slices ──────────────────────────────
+// ESP32-C3 keeps no RTC IO domain (SOC_RTCIO_PIN_COUNT == 0), so a deep-sleep
+// GPIO wakeup depends on the pad holding its level while the digital domain is
+// powered down — not reliable on every BOOT-button wiring. To make "tap BOOT to
+// wake the device" dependable we walk a long sleep in short slices and sample
+// the button after each timer wake instead of trusting the GPIO wakeup alone.
+// GPIO wakeup stays enabled as a fast path; the slices are the safety net.
+static const int SLEEP_SLICE_SEC = 15;
+
+RTC_DATA_ATTR static uint16_t sSleepSliceLeft = 0;  // slices left in this sleep
+RTC_DATA_ATTR static uint16_t sSleepSliceSec = 0;   // length of one slice
+RTC_DATA_ATTR static uint8_t sButtonStuck = 0;      // button held down at sleep time
+RTC_DATA_ATTR static uint8_t sWakeByButtonRtc = 0;  // survived a light-sleep restart
+RTC_DATA_ATTR static uint16_t sButtonHoldRtc = 0;   // hold length, survives restart
+static bool gWokeByButtonPoll = false;              // button found during a slice
+static uint32_t gButtonHoldMs = 0;                  // how long it was held
+
+static bool bootButtonPressed() {
+    pinMode(PIN_CFG_BTN, INPUT_PULLUP);
+    delay(5);
+    if (digitalRead(PIN_CFG_BTN) != LOW) return false;
+    delay(70);  // debounce: a real tap holds far longer than 70 ms
+    return digitalRead(PIN_CFG_BTN) == LOW;
+}
+
+// Called at the very top of setup(). Returns true when the caller must return
+// immediately (we already went back to sleep).
+static bool handleSleepSliceWake() {
+    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER) return false;
+    if (sSleepSliceLeft == 0 || sSleepSliceSec == 0) return false;
+    // A stuck/shorted button must not turn every slice into a wake-up loop.
+    if (!sButtonStuck && bootButtonPressed()) {
+        // Wait for release so a deliberate hold can still mean "open the portal".
+        unsigned long pressStart = millis();
+        while (digitalRead(PIN_CFG_BTN) == LOW && millis() - pressStart < 2500UL) {
+            delay(10);
+        }
+        gButtonHoldMs = (uint32_t)(millis() - pressStart);
+        gWokeByButtonPoll = true;
+        sSleepSliceLeft = 0;
+        return false;
+    }
+    sSleepSliceLeft--;
+    if (sSleepSliceLeft == 0) return false;  // slice budget spent -> normal boot
+    esp_sleep_enable_timer_wakeup((uint64_t)sSleepSliceSec * 1000000ULL);
+    esp_deep_sleep_start();
+    return true;
+}
+
+// ── Light sleep: the path that actually lets GPIO9 wake the board ──
+//
+// Deep sleep on ESP32-C3 only accepts the RTC pads (GPIO0..GPIO5) as wake
+// sources, so esp_deep_sleep_enable_gpio_wakeup() rejects GPIO9 with
+// ESP_ERR_INVALID_ARG — that is the 258 error in the log.
+//
+// Light sleep is a different mechanism: the digital domain keeps its power, so
+// gpio_wakeup_enable() works on ANY pin, GPIO9 included. That is almost
+// certainly what the stock firmware uses. A tap then wakes the chip in
+// microseconds instead of waiting for the next 15 s deep-sleep slice.
+//
+// Cost: ~0.3–0.8 mA instead of ~5 uA. Fine on USB power; for a battery build
+// set SLEEP_USE_LIGHT_SLEEP to 0 in config.h to go back to deep-sleep slices.
+static const int LIGHT_SLEEP_SLICE_SEC = 30;
+
+// Never returns. Either the button was tapped (restart with sWakeByButtonRtc
+// set so setup() knows to stay online) or the window elapsed (restart for the
+// scheduled refresh).
+static bool lightSleepUntilButton(int minutes) {
+    pinMode(PIN_CFG_BTN, INPUT_PULLUP);
+    delay(10);
+
+    esp_err_t armErr = gpio_wakeup_enable((gpio_num_t)PIN_CFG_BTN, GPIO_INTR_LOW_LEVEL);
+    esp_err_t sleepErr = esp_sleep_enable_gpio_wakeup();
+    if (armErr != ESP_OK || sleepErr != ESP_OK) {
+        Serial.printf("[SLEEP] Light-sleep GPIO wake unavailable (arm=%d, sleep=%d); "
+                      "falling back to deep-sleep slices\n",
+                      (int)armErr, (int)sleepErr);
+        return false;
+    }
+    Serial.printf("[SLEEP] Light sleep %d min, GPIO%d wake enabled (%ds slices)\n",
+                  minutes, PIN_CFG_BTN, LIGHT_SLEEP_SLICE_SEC);
+    Serial.flush();
+
+    uint32_t remainingSec = (uint32_t)minutes * 60UL;
+    while (remainingSec > 0) {
+        uint32_t sliceSec = remainingSec > (uint32_t)LIGHT_SLEEP_SLICE_SEC
+                          ? (uint32_t)LIGHT_SLEEP_SLICE_SEC
+                          : remainingSec;
+        esp_sleep_enable_timer_wakeup((uint64_t)sliceSec * 1000000ULL);
+        esp_light_sleep_start();
+        esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+        remainingSec -= sliceSec;
+
+        if (cause != ESP_SLEEP_WAKEUP_GPIO) continue;
+
+        // The wake source is a level, not an edge: debounce before believing it.
+        delay(20);
+        if (digitalRead(PIN_CFG_BTN) != LOW) continue;
+
+        unsigned long pressStart = millis();
+        while (digitalRead(PIN_CFG_BTN) == LOW && millis() - pressStart < 3000UL) {
+            delay(10);
+        }
+        unsigned long held = millis() - pressStart;
+        sButtonHoldRtc = (uint16_t)(held > 10000UL ? 10000UL : held);
+        sWakeByButtonRtc = 0xA5;
+        Serial.printf("[WAKE] GPIO%d button held ~%lums -> restarting to serve it\n",
+                      PIN_CFG_BTN, held);
+        Serial.flush();
+        delay(30);
+        esp_restart();
+    }
+
+    Serial.println("[SLEEP] Sleep window elapsed -> restart for scheduled refresh");
+    Serial.flush();
+    delay(30);
+    esp_restart();
+    return true;
+}
+
+
 static bool temporaryOnlineActive(unsigned long now = millis()) {
     return ctx.temporaryOnlineUntil != 0 &&
            (long)(now - ctx.temporaryOnlineUntil) < 0;
@@ -182,17 +303,20 @@ static void clearTemporaryOnlineWindow() {
     ctx.temporaryOnlineUntil = 0;
 }
 
-static void extendTemporaryOnlineWindow(const char *reason) {
-    ctx.temporaryOnlineUntil = millis() + TEMP_ONLINE_WINDOW_MS;
+static void setOnlineWindow(unsigned long ms, const char *reason) {
+    ctx.temporaryOnlineUntil = millis() + ms;
     ctx.liveMode = true;
     ctx.lastLivePollAt = 0;
     ctx.lastLiveWiFiRetryAt = 0;
-    Serial.printf("[LIVE] Temporary online window: %lu min",
-                  TEMP_ONLINE_WINDOW_MS / 60000UL);
+    Serial.printf("[LIVE] Online window: %lu min", ms / 60000UL);
     if (reason && reason[0]) {
         Serial.printf(" (%s)", reason);
     }
     Serial.println();
+}
+
+static void extendTemporaryOnlineWindow(const char *reason) {
+    setOnlineWindow(TEMP_ONLINE_WINDOW_MS, reason);
 }
 
 static bool refreshActivityFlags() {
@@ -1019,9 +1143,24 @@ static bool decodeVoiceBmpToFrameBuffer(const uint8_t *bmpBytes, size_t bmpLen);
 // ═════════════════════════════════════════════════════════════
 
 void setup() {
+    if (handleSleepSliceWake()) return;
     ledInit();
     Serial.begin(115200);
-    delay(3000);
+    // A light-sleep wake ends in esp_restart(), which wipes the wake-up cause.
+    // Restore it from RTC memory so the boot still counts as "button pressed".
+    if (sWakeByButtonRtc == 0xA5) {
+        gWokeByButtonPoll = true;
+        gButtonHoldMs = sButtonHoldRtc;
+        sWakeByButtonRtc = 0;
+        sButtonHoldRtc = 0;
+    }
+    // The 3 s wait is only there for USB-CDC enumeration on a cold boot. Skipping
+    // it when we just woke up makes a BOOT tap feel responsive.
+    if (!gWokeByButtonPoll && esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED) {
+        delay(3000);
+    } else {
+        delay(300);
+    }
 #if defined(BOARD_PROFILE_ESP32_C3_WROOM02) || defined(BOARD_PROFILE_SMT_WROOM32E) || defined(BOARD_PROFILE_YD_ESP32_S3_N16R8)
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
@@ -1041,7 +1180,11 @@ void setup() {
     loadConfig();
 
     bool forcePortal = false;
-    if (digitalRead(PIN_CFG_BTN) == LOW) {
+    if (gWokeByButtonPoll) {
+        // A tap that woke us from a sleep slice means "come online"; only a real
+        // hold should drop into the captive portal.
+        forcePortal = (gButtonHoldMs >= (uint32_t)CFG_BTN_HOLD_MS);
+    } else if (digitalRead(PIN_CFG_BTN) == LOW) {
         delay(400);
         forcePortal = (digitalRead(PIN_CFG_BTN) == LOW);
     }
@@ -1160,7 +1303,7 @@ void setup() {
     }
 
     bool firstInstallLivePending = isFirstInstallLiveModePending();
-    bool buttonTemporaryOnline = (ctx.wakeupReason == WakeupReason::BUTTON);
+    bool buttonTemporaryOnline = (ctx.wakeupReason == WakeupReason::BUTTON) || gWokeByButtonPoll;
     if (alwaysActive) {
         ctx.liveMode = true;
         clearTemporaryOnlineWindow();
@@ -1179,13 +1322,21 @@ void setup() {
         extendTemporaryOnlineWindow("button wakeup");
         postRuntimeMode("active");
     } else {
-        clearTemporaryOnlineWindow();
-        postRuntimeMode("interval");
-        if (focusListening) {
-            Serial.println("[FOCUS] Focus listening enabled, keeping WiFi connected in interval mode");
+        // Stay reachable for a while after every refresh. Without this the
+        // device drops WiFi the instant the frame is drawn and the web page has
+        // no window at all in which to push a new image.
+        if (POST_REFRESH_ONLINE_MS > 0) {
+            setOnlineWindow(POST_REFRESH_ONLINE_MS, "post-refresh");
+            postRuntimeMode("active");
         } else {
-            WiFi.disconnect(true);
-            WiFi.mode(WIFI_OFF);
+            clearTemporaryOnlineWindow();
+            postRuntimeMode("interval");
+            if (focusListening) {
+                Serial.println("[FOCUS] Focus listening enabled, keeping WiFi connected in interval mode");
+            } else {
+                WiFi.disconnect(true);
+                WiFi.mode(WIFI_OFF);
+            }
         }
     }
 
@@ -1204,8 +1355,10 @@ void setup() {
                   DEBUG_REFRESH_MIN, cfgSleepMin);
 #else
     if (temporaryOnlineActive()) {
-        Serial.printf("Staying awake for temporary online window (%lu min)\n",
-                      TEMP_ONLINE_WINDOW_MS / 60000UL);
+        long leftMs = (long)(ctx.temporaryOnlineUntil - millis());
+        if (leftMs < 0) leftMs = 0;
+        Serial.printf("Staying awake for online window (%ld s left), polling every %d s\n",
+                      leftMs / 1000L, LIVE_POLL_MS / 1000);
     } else {
         Serial.printf("Staying awake, refresh every %d min\n", cfgSleepMin);
     }
@@ -1387,7 +1540,9 @@ void loop() {
         triggerImmediateRefresh();
         ctx.wantRefresh = false;
         ctx.setupDoneAt = millis();
-        if (!focusListening && !alwaysActive) {
+        // A short BOOT press extends the temporary online window; don't let the
+        // refresh that follows the press put us straight back to sleep.
+        if (!focusListening && !alwaysActive && !temporaryOnlineActive()) {
             if (ctx.liveMode) {
                 ctx.liveMode = false;
                 postRuntimeMode("interval");
@@ -1443,10 +1598,12 @@ void loop() {
 #if INKSIGHT_IMG_BUF_BYTES_MACRO > 20000
     // Second full-frame static buffer overflows classic ESP32 DRAM for 5.83"/7.5" panels.
     static uint8_t *alertBackupBuf = nullptr;
-    if (!alertBackupBuf) {
+    static bool alertBackupTried = false;
+    if (!alertBackupTried) {
+        alertBackupTried = true;  // try once; retrying every loop just floods the log
         alertBackupBuf = (uint8_t *)malloc(IMG_BUF_LEN);
         if (!alertBackupBuf) {
-            Serial.println("[MEM] alertBackupBuf malloc failed; focus alerts disabled");
+            Serial.println("[MEM] alertBackupBuf unavailable; focus alerts disabled");
         }
     }
 #else
@@ -1502,9 +1659,33 @@ static void enterDeepSleep(int minutes, bool force) {
     WiFi.mode(WIFI_OFF);
     epdSleep();
     ledFeedback("off");
-    Serial.printf("Deep sleep for %d min (~%duA)\n", minutes, 5);
+
+#if SLEEP_USE_LIGHT_SLEEP && PIN_CFG_BTN >= 0
+    // Light sleep keeps the digital domain alive, so GPIO9 — which deep sleep
+    // rejects outright — can still wake the board. Skip it when the button is
+    // already held: a level-triggered wake would fire instantly and the whole
+    // sleep window would collapse into a restart loop.
+    pinMode(PIN_CFG_BTN, INPUT_PULLUP);
+    delay(10);
+    if (digitalRead(PIN_CFG_BTN) == HIGH) {
+        if (lightSleepUntilButton(minutes)) {
+            return;  // never reached; lightSleepUntilButton only restarts
+        }
+    } else {
+        Serial.printf("[SLEEP] GPIO%d held LOW at sleep time -> timer-only deep sleep\n",
+                      PIN_CFG_BTN);
+    }
+#endif
+
+    // Sleep in short slices so the BOOT button can be sampled on every wake.
+    uint32_t totalSec = (uint32_t)minutes * 60UL;
+    sSleepSliceSec = (uint16_t)SLEEP_SLICE_SEC;
+    sSleepSliceLeft = (uint16_t)((totalSec + SLEEP_SLICE_SEC - 1) / SLEEP_SLICE_SEC);
+    if (sSleepSliceLeft == 0) sSleepSliceLeft = 1;
+    Serial.printf("Deep sleep for %d min (%u slices of %ds, ~%duA)\n",
+                  minutes, (unsigned)sSleepSliceLeft, SLEEP_SLICE_SEC, 5);
     Serial.flush();
-    esp_sleep_enable_timer_wakeup((uint64_t)minutes * 60ULL * 1000000ULL);
+    esp_sleep_enable_timer_wakeup((uint64_t)sSleepSliceSec * 1000000ULL);
 #if PIN_CFG_BTN >= 0
     pinMode(PIN_CFG_BTN, INPUT_PULLUP);
     unsigned long releaseStartedAt = millis();
@@ -1513,6 +1694,7 @@ static void enterDeepSleep(int minutes, bool force) {
     }
     delay(50);
     bool wakeButtonReady = (digitalRead(PIN_CFG_BTN) == HIGH);
+    sButtonStuck = wakeButtonReady ? 0 : 1;
     if (!wakeButtonReady) {
         Serial.printf("[WAKE] GPIO%d is still LOW; timer-only wake for this sleep cycle\n", PIN_CFG_BTN);
     } else {
@@ -1526,13 +1708,20 @@ static void enterDeepSleep(int minutes, bool force) {
         gpio_pulldown_dis((gpio_num_t)PIN_CFG_BTN);
 #endif
 #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
-        esp_deep_sleep_enable_gpio_wakeup(wakeMask, ESP_GPIO_WAKEUP_GPIO_LOW);
+        esp_err_t gpioWakeErr = esp_deep_sleep_enable_gpio_wakeup(wakeMask, ESP_GPIO_WAKEUP_GPIO_LOW);
 #elif CONFIG_IDF_TARGET_ESP32
-        esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ALL_LOW);
+        esp_err_t gpioWakeErr = esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ALL_LOW);
 #else
-        esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+        esp_err_t gpioWakeErr = esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
 #endif
-        Serial.printf("[WAKE] Timer + GPIO%d button wake enabled\n", PIN_CFG_BTN);
+        if (gpioWakeErr == ESP_OK) {
+            Serial.printf("[WAKE] Timer + GPIO%d button wake enabled\n", PIN_CFG_BTN);
+        } else {
+            // ESP32-C3 rejects pins outside its wake-up set (e.g. GPIO9); the
+            // 15s sleep slices are what actually make a BOOT tap work there.
+            Serial.printf("[WAKE] GPIO%d deep-sleep wake unsupported (%d); relying on %ds sleep slices\n",
+                          PIN_CFG_BTN, (int)gpioWakeErr, SLEEP_SLICE_SEC);
+        }
     }
 #endif
     esp_deep_sleep_start();
@@ -1678,7 +1867,7 @@ static void handleLiveMode() {
         triggerImmediateRefresh(false, true);
         ctx.setupDoneAt = millis();
         if (wasTemporaryOnline && !focusListening && !alwaysActive) {
-            extendTemporaryOnlineWindow("remote action");
+            setOnlineWindow(POST_REFRESH_ONLINE_MS, "remote action");
             return;
         }
         if (!focusListening && !alwaysActive) {
@@ -2290,7 +2479,17 @@ static void checkConfigButton() {
 
             if (pressDuration >= (unsigned long)SHORT_PRESS_MIN_MS &&
                 pressDuration < (unsigned long)CFG_BTN_HOLD_MS) {
-                Serial.println("[BTN] Short press while awake; no action");
+                // Short press = "bring it online now": extend the temporary online
+                // window so the web page can push settings immediately, and refresh
+                // once so the tap has visible feedback.
+                Serial.println("[BTN] Short press -> bring device online");
+                if (!focusListening && !alwaysActive) {
+                    extendTemporaryOnlineWindow("button short press");
+                    if (WiFi.status() == WL_CONNECTED) {
+                        postRuntimeMode("active");
+                    }
+                }
+                ctx.wantRefresh = true;
             }
         }
     }

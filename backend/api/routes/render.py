@@ -61,6 +61,22 @@ def _configured_refresh_minutes(config: Optional[dict]) -> int:
     return refresh_minutes
 
 
+def _image_tune_from_query(
+    brightness: Optional[int], contrast: Optional[int], saturation: Optional[int]
+) -> Optional[dict]:
+    """把预览请求里的调色滑杆值打包成覆盖参数。
+
+    三项都未传时返回 None，渲染侧回落到设备已保存的配置。
+    """
+    if brightness is None and contrast is None and saturation is None:
+        return None
+    return {
+        "brightness": 100 if brightness is None else brightness,
+        "contrast": 100 if contrast is None else contrast,
+        "saturation": 100 if saturation is None else saturation,
+    }
+
+
 @router.get("/render")
 @limiter.limit("10/minute")
 async def render(
@@ -312,6 +328,9 @@ async def preview(
     no_cache: Optional[int] = Query(default=None),
     intent: Optional[int] = Query(default=None),
     colors: int = Query(default=2, ge=2, le=4),
+    brightness: Optional[int] = Query(default=None, ge=0, le=200, description="预览用图像亮度，覆盖设备配置"),
+    contrast: Optional[int] = Query(default=None, ge=0, le=200, description="预览用图像对比度，覆盖设备配置"),
+    saturation: Optional[int] = Query(default=None, ge=0, le=200, description="预览用图像饱和度，覆盖设备配置"),
     ui_language: Optional[str] = Query(default=None, description="Preview only: zh|en, overrides device mode_language"),
     x_device_token: Optional[str] = Header(default=None),
     x_inksight_llm_api_key: Optional[str] = Header(default=None),
@@ -367,6 +386,7 @@ async def preview(
             user_api_key=x_inksight_llm_api_key,
             intent_only=(intent == 1),
             colors=colors,
+            image_tune=_image_tune_from_query(brightness, contrast, saturation),
         )
         if intent == 1:
             from fastapi.responses import JSONResponse
@@ -470,6 +490,9 @@ async def preview_stream(
     h: int = Query(default=SCREEN_HEIGHT, ge=100, le=1200),
     no_cache: Optional[int] = Query(default=None),
     colors: int = Query(default=2, ge=2, le=4),
+    brightness: Optional[int] = Query(default=None, ge=0, le=200, description="预览用图像亮度，覆盖设备配置"),
+    contrast: Optional[int] = Query(default=None, ge=0, le=200, description="预览用图像对比度，覆盖设备配置"),
+    saturation: Optional[int] = Query(default=None, ge=0, le=200, description="预览用图像饱和度，覆盖设备配置"),
     ui_language: Optional[str] = Query(default=None, description="Preview only: zh|en, overrides device mode_language"),
     x_device_token: Optional[str] = Header(default=None),
     x_inksight_llm_api_key: Optional[str] = Header(default=None),
@@ -525,6 +548,7 @@ async def preview_stream(
                 current_user_id=current_user_id,
                 user_api_key=x_inksight_llm_api_key,
                 colors=colors,
+                image_tune=_image_tune_from_query(brightness, contrast, saturation),
             )
             # 如果 API key 无效，返回错误事件
             if api_key_invalid:

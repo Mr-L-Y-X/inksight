@@ -33,6 +33,22 @@ from .config import (
 DB_PATH = _MAIN_DB_PATH
 
 
+def _clamp_pct(value, default: int = 100) -> int:
+    """把图像调色参数（亮度/对比度/饱和度）夹到 0-200，100 为原始值。"""
+    if value is None:
+        return default
+    try:
+        v = int(float(value))
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(200, v))
+
+
+def _pct_to_factor(value) -> float:
+    """0-200 的百分比映射为 PIL ImageEnhance 的 0.0-2.0 系数。"""
+    return _clamp_pct(value) / 100.0
+
+
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("PRAGMA journal_mode=WAL")
@@ -156,6 +172,9 @@ async def init_db():
             "timezone": "TEXT DEFAULT ''",
             "admin1": "TEXT DEFAULT ''",
             "country": "TEXT DEFAULT ''",
+            "brightness": "INTEGER DEFAULT 100",
+            "contrast": "INTEGER DEFAULT 100",
+            "saturation": "INTEGER DEFAULT 100",
         }
         try:
             cursor = await db.execute("PRAGMA table_info(configs)")
@@ -1503,8 +1522,9 @@ async def save_config(mac: str, data: dict) -> int:
            (mac, nickname, modes, refresh_strategy, character_tones,
             language, mode_language, content_tone, city, latitude, longitude, timezone, admin1, country,
             refresh_interval, llm_provider, llm_model, image_provider, image_model,
-            countdown_events, time_slot_rules, memo_text, mode_overrides, focus_listening, always_active, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            countdown_events, time_slot_rules, memo_text, mode_overrides, focus_listening, always_active,
+            brightness, contrast, saturation, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             mac,
             data.get("nickname", ""),
@@ -1531,6 +1551,9 @@ async def save_config(mac: str, data: dict) -> int:
             mode_overrides_json,
             1 if bool(data.get("is_focus_listening", False)) else 0,
             always_active,
+            _clamp_pct(data.get("brightness")),
+            _clamp_pct(data.get("contrast")),
+            _clamp_pct(data.get("saturation")),
             now,
         ),
     )
@@ -1590,8 +1613,9 @@ async def update_focus_listening(mac: str, enabled: bool) -> bool:
                 """INSERT INTO configs
                    (mac, nickname, modes, refresh_strategy, character_tones,
                     language, mode_language, content_tone, city, refresh_interval, llm_provider, llm_model, image_provider, image_model,
-                    countdown_events, time_slot_rules, memo_text, mode_overrides, focus_listening, always_active, is_active, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                    countdown_events, time_slot_rules, memo_text, mode_overrides, focus_listening, always_active,
+                    brightness, contrast, saturation, is_active, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
                 (
                     normalized_mac,
                     prev.get("nickname", "") or "",
@@ -1613,6 +1637,9 @@ async def update_focus_listening(mac: str, enabled: bool) -> bool:
                     mode_overrides_json,
                     1 if enabled else 0,
                     1 if bool(prev.get("always_active", False)) else 0,
+                    _clamp_pct(prev.get("brightness")),
+                    _clamp_pct(prev.get("contrast")),
+                    _clamp_pct(prev.get("saturation")),
                     datetime.now().isoformat(),
                 ),
             )
@@ -1689,6 +1716,10 @@ def _row_to_dict(row, columns) -> dict:
     d["imageProvider"] = d.get("image_provider", DEFAULT_IMAGE_PROVIDER)
     d["imageModel"] = d.get("image_model", DEFAULT_IMAGE_MODEL)
     d["memoText"] = d.get("memo_text", "")
+    # 图像调色参数：0-200，100 为原始值。旧库无此列时回落到 100。
+    d["brightness"] = _clamp_pct(d.get("brightness"))
+    d["contrast"] = _clamp_pct(d.get("contrast"))
+    d["saturation"] = _clamp_pct(d.get("saturation"))
     # Parse JSON list fields from DB TEXT columns and normalize to arrays.
     # This avoids leaking raw JSON strings (for example "[]") to web clients.
     ce_raw = d.get("countdown_events", "[]")

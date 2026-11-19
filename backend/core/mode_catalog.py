@@ -191,6 +191,12 @@ BUILTIN_CATALOG: list[CatalogItem] = [
         zh=CatalogText(name="相框", tip="上传本地照片（至多6张），循环播放"),
         en=CatalogText(name="Photo Frame", tip="Upload up to 6 photos, cycle on each refresh"),
     ),
+    CatalogItem(
+        mode_id="MY_ALBUM",
+        category="custom",
+        zh=CatalogText(name="相册", tip="按屏幕比例裁切照片，全屏显示（至多6张）"),
+        en=CatalogText(name="Album", tip="Crop photos to your screen ratio, shown full screen"),
+    ),
 ]
 
 

@@ -1,0 +1,32 @@
+{
+  "mode_id": "MY_ALBUM",
+  "display_name": "Album",
+  "icon": "my_album",
+  "cacheable": false,
+  "description": "Crop photos to your screen ratio and show them full screen (up to 6)",
+  "content": {
+    "type": "static",
+    "static_data": {"image_url": ""},
+    "fallback": {"image_url": ""}
+  },
+  "layout": {
+    "body_align": "top",
+    "status_bar": {"enabled": false, "line_width": 0},
+    "body": [
+      {
+        "type": "image",
+        "field": "image_url",
+        "width": "100%",
+        "height": "100%",
+        "x": 0,
+        "y": 0,
+        "fit": "cover",
+        "photo_enhance": true,
+        "align_x": "center",
+        "align_y": "center",
+        "margin_bottom": 0
+      }
+    ],
+    "footer": {"enabled": false, "line_width": 0}
+  }
+}

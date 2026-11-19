@@ -780,6 +780,212 @@ void epdSleep() {
     EPD_Send_1(0x07, 0xA5); // deep sleep
 }
 
+#elif defined(EPD_PANEL_398_NZ07)
+// ── 3.98" SE0398NZ07 (华为手机壳拆机屏, 768x552 BWRY 四色) ──
+// 控制器不做常规的「整屏写 RAM→刷新」，必须逐行下发：
+//   0x83 Set Partial RAM Area (9 字节: x0,x1,y0,y1,scan) → 0x10 Write RAM Data (192B = 768px @2bpp)
+// 物理栅极是左右两侧 Gate Driver 交错寻址的，Y 地址必须按 A0/A1 映射公式换算，
+// 否则画面会出现奇偶错位、上下对穿的条纹。
+// 参考驱动: https://blog.zgqinc.gq/posts/e398nz/ (epd3in98.py)
+//
+// 注意: 后端 image_to_raw_2bpp 已是「首个像素在 bits7-6」的 MSB 优先排布，
+//       与本面板要求一致，无需再做位序转换。
+//
+// 硬件前提: 该屏需要 VGH +22V / VGL -20V / VSH +15V，驱动板升压不足会 BUSY 死锁。
+
+#include <SPI.h>
+
+#ifndef EPD_398_SPI_HZ
+#define EPD_398_SPI_HZ 8000000
+#endif
+
+static bool _initialized = false;
+static const int EPD_398_ROW_BYTES = EPD_WIDTH / 4;  // 2bpp: 768/4 = 192
+
+// ── 低层 SPI ────────────────────────────────────────────────
+
+static void epd398Cmd(uint8_t cmd) {
+    digitalWrite(PIN_EPD_DC, LOW);
+    digitalWrite(PIN_EPD_CS, LOW);
+    SPI.transfer(cmd);
+    digitalWrite(PIN_EPD_CS, HIGH);
+}
+
+static void epd398Data(const uint8_t *buf, size_t len) {
+    digitalWrite(PIN_EPD_DC, HIGH);
+    digitalWrite(PIN_EPD_CS, LOW);
+    SPI.writeBytes(buf, len);
+    digitalWrite(PIN_EPD_CS, HIGH);
+}
+
+static void epd398Data1(uint8_t d) {
+    epd398Data(&d, 1);
+}
+
+// BUSY: 低电平 = 忙碌 (与 SSD1683 相反)
+static void epd398WaitBusy(unsigned long timeoutMs = 45000) {
+    unsigned long t0 = millis();
+    delay(20);
+    while (digitalRead(PIN_EPD_BUSY) == LOW) {
+        delay(20);
+        if (millis() - t0 > timeoutMs) {
+            Serial.printf("[EPD398] BUSY timeout %lums\n", timeoutMs);
+            return;
+        }
+    }
+}
+
+// ── 物理栅极地址映射 ────────────────────────────────────────
+// A0: 0,2,...,550 然后 551,549,...,1
+// A1: 原文公式 s2<=299 时 y 为负数，按其物理意图 +600 回绕（未实测）
+static uint16_t epd398MapRow(int s2) {
+#if defined(EPD_398_PANEL_A1)
+    int y = (s2 <= 299) ? (s2 * 2 - 599) : (s2 * 2);
+    if (y < 0) y += 600;
+    return (uint16_t)y;
+#else
+    return (uint16_t)((s2 <= 275) ? (s2 * 2) : (1103 - 2 * s2));
+#endif
+}
+
+static void epd398SetScanRow(uint16_t y) {
+    uint8_t area[9] = {
+        0x00, 0x00, 0x02, 0xFF,                        // x: 0 .. 767
+        (uint8_t)(y >> 8), (uint8_t)(y & 0xFF),        // y start
+        (uint8_t)(y >> 8), (uint8_t)(y & 0xFF),        // y end
+        0x01                                           // scan mode
+    };
+    epd398Cmd(0x83);
+    epd398Data(area, sizeof(area));
+}
+
+static void epd398RestoreWindow() {
+    // 恢复默认扫描范围 (0,767,0,599)
+    static const uint8_t restore[9] = {0x00, 0x00, 0x02, 0xFF, 0x00, 0x00, 0x02, 0x57, 0x01};
+    epd398Cmd(0x83);
+    epd398Data(restore, sizeof(restore));
+}
+
+// ── GPIO / 初始化 ───────────────────────────────────────────
+
+void gpioInit() {
+    pinMode(PIN_EPD_CS,   OUTPUT);
+    pinMode(PIN_EPD_DC,   OUTPUT);
+    pinMode(PIN_EPD_RST,  OUTPUT);
+    pinMode(PIN_EPD_BUSY, INPUT);
+    pinMode(PIN_CFG_BTN,  INPUT_PULLUP);
+    digitalWrite(PIN_EPD_CS,  HIGH);
+    digitalWrite(PIN_EPD_DC,  LOW);
+    digitalWrite(PIN_EPD_RST, HIGH);
+
+    SPI.begin(PIN_EPD_SCK, -1, PIN_EPD_MOSI, -1);
+    SPI.setFrequency(EPD_398_SPI_HZ);
+    SPI.setDataMode(SPI_MODE0);
+    SPI.setBitOrder(MSBFIRST);
+}
+
+void epdInit() {
+    if (_initialized) return;
+
+    digitalWrite(PIN_EPD_RST, LOW);  delay(40);
+    digitalWrite(PIN_EPD_RST, HIGH); delay(50);
+    epd398WaitBusy(2000);
+    delay(30);
+
+    epd398Cmd(0x00); epd398Data1(0x0B);          // PSR: 四色 + 2bpp
+    epd398Cmd(0x61);                              // TRES: 768 x 600 (控制器 RAM, 可视仅 552)
+    static const uint8_t tres[4] = {0x03, 0x00, 0x02, 0x58};
+    epd398Data(tres, sizeof(tres));
+    epd398Cmd(0x04);                              // Power On
+    epd398WaitBusy(5000);
+
+    _initialized = true;
+}
+
+void epdInitFast() { epdInit(); }
+
+// ── 数据下发 ────────────────────────────────────────────────
+
+static void epd398WriteRows2bpp(const uint8_t *src2bpp) {
+    for (int s2 = 0; s2 < EPD_HEIGHT; s2++) {
+        epd398SetScanRow(epd398MapRow(s2));
+        epd398Cmd(0x10);
+        epd398Data(src2bpp + (size_t)s2 * EPD_398_ROW_BYTES, EPD_398_ROW_BYTES);
+    }
+    epd398RestoreWindow();
+}
+
+// 1bpp 灰度图逐行就地转 2bpp，避免再申请一份 106KB 缓冲
+static void epd398WriteRowsMono(const uint8_t *mono) {
+    uint8_t row[EPD_WIDTH / 4];
+    const int monoRowBytes = EPD_WIDTH / 8;
+    for (int s2 = 0; s2 < EPD_HEIGHT; s2++) {
+        const uint8_t *src = mono + (size_t)s2 * monoRowBytes;
+        for (int x = 0; x < EPD_WIDTH; x += 4) {
+            uint8_t packed = 0;
+            for (int bit = 0; bit < 4; bit++) {
+                int px = x + bit;
+                bool isBlack = (src[px >> 3] & (0x80 >> (px & 7))) == 0;
+                packed |= (uint8_t)(isBlack ? 0x00 : 0x01) << (6 - bit * 2);
+            }
+            row[x >> 2] = packed;
+        }
+        epd398SetScanRow(epd398MapRow(s2));
+        epd398Cmd(0x10);
+        epd398Data(row, sizeof(row));
+    }
+    epd398RestoreWindow();
+}
+
+static void epd398Refresh() {
+    epd398Cmd(0x12); epd398Data1(0x01);   // Display Refresh (四色物理波形, 约 15s)
+    epd398WaitBusy(40000);
+    epd398Cmd(0x02); epd398Data1(0x00);   // Power Off, 防止屏幕过充
+    epd398WaitBusy(5000);
+    _initialized = false;
+}
+
+// ── 对外接口 ────────────────────────────────────────────────
+
+void epdDisplay(const uint8_t *image) {
+    epdInit();
+    epd398WriteRowsMono(image);
+    epd398Refresh();
+}
+
+void epdDisplay2bpp(const uint8_t *image2bpp) {
+    epdInit();
+    epd398WriteRows2bpp(image2bpp);
+    epd398Refresh();
+}
+
+void epdDisplayFast(const uint8_t *image) { epdDisplay(image); }
+
+void epdDisplayDeepClear(const uint8_t *image) { epdDisplay(image); }
+
+bool epdSupportsPartialRefresh() { return false; }
+
+void epdPartialDisplay(uint8_t *data, int xStart, int yStart, int xEnd, int yEnd) {
+    (void)xStart; (void)yStart; (void)xEnd; (void)yEnd;
+    epdDisplay(data);
+}
+
+void epdPartialDisplayWithOld(uint8_t *data, const uint8_t *oldData,
+                              int xStart, int yStart, int xEnd, int yEnd) {
+    (void)oldData;
+    epdPartialDisplay(data, xStart, yStart, xEnd, yEnd);
+}
+
+void epdSleep() {
+    if (_initialized) {
+        epd398Cmd(0x02); epd398Data1(0x00);
+        epd398WaitBusy(5000);
+        _initialized = false;
+    }
+    epd398Cmd(0x07); epd398Data1(0xA5);  // Deep Sleep
+    delay(200);
+}
+
 #else
 // ── Other panel sizes: GxEPD2 (hardware SPI) ─────────────────
 
@@ -846,7 +1052,7 @@ void epdSleep() {
   GxEPD2_BW<GxEPD2_750_T7, GxEPD2_750_T7::HEIGHT / 4> display(
       GxEPD2_750_T7(PIN_EPD_CS, PIN_EPD_DC, PIN_EPD_RST, PIN_EPD_BUSY));
 #else
-  #error "No EPD panel type defined. Use -DEPD_PANEL_42_SSD1683_BW, -DEPD_PANEL_42_DKE_RY683, -DEPD_PANEL_42_GDEM042F52, -DEPD_PANEL_42_GXEPD2_T81, -DEPD_PANEL_42_GXEPD2_GYE042A87, -DEPD_PANEL_42_GXEPD2_420, -DEPD_PANEL_42_GXEPD2_M01, -DEPD_PANEL_29, -DEPD_PANEL_583_UC8179, -DEPD_PANEL_583, or -DEPD_PANEL_75"
+  #error "No EPD panel type defined. Use -DEPD_PANEL_42_SSD1683_BW, -DEPD_PANEL_42_DKE_RY683, -DEPD_PANEL_42_GDEM042F52, -DEPD_PANEL_42_GXEPD2_T81, -DEPD_PANEL_42_GXEPD2_GYE042A87, -DEPD_PANEL_42_GXEPD2_420, -DEPD_PANEL_42_GXEPD2_M01, -DEPD_PANEL_42_WFT, -DEPD_PANEL_398_NZ07, -DEPD_PANEL_29, -DEPD_PANEL_583_UC8179, -DEPD_PANEL_583, or -DEPD_PANEL_75"
 #endif
 
 static bool _initialized = false;

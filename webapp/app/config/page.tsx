@@ -9,6 +9,7 @@ import { ModeSelector } from "@/components/config/mode-selector";
 import { ModeComposer, type ComposerPropMeta, type ComposerCatalog, type ComposerFragmentState, type ComposerState, withPropDefaults, findCatalogItem, randomComposerId } from "@/components/config/mode-composer";
 import { EInkPreviewPanel } from "@/components/config/eink-preview-panel";
 import { CalendarReminders } from "@/components/config/calendar-reminders";
+import { AlbumModal } from "@/components/config/album-modal";
 import { TimetableEditor, type TimetableData } from "@/components/config/timetable-editor";
 import { RefreshStrategyEditor, TimeSlotRule } from "@/components/config/refresh-strategy-editor";
 import { Field, StatCard } from "@/components/config/shared";
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 import { authHeaders, fetchCurrentUser, onAuthChanged } from "@/lib/auth";
 import { localeFromPathname, withLocalePath } from "@/lib/i18n";
+import { usePersistedState } from "@/lib/use-persisted-state";
 import {
   buildLocationValue,
   cleanLocationValue,
@@ -776,6 +778,10 @@ function ConfigPageInner() {
   const [settingsJsonDrafts, setSettingsJsonDrafts] = useState<Record<string, string>>({});
   const [settingsJsonErrors, setSettingsJsonErrors] = useState<Record<string, string>>({});
   const [memoText, setMemoText] = useState("");
+  // 图像调色（0-200，100 为原值）：只作用于模式里的图片块，文字渲染不受影响
+  const [brightness, setBrightness] = useState(100);
+  const [contrast, setContrast] = useState(100);
+  const [saturation, setSaturation] = useState(100);
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -785,9 +791,10 @@ function ConfigPageInner() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewStatusText, setPreviewStatusText] = useState("");
   const [previewMode, setPreviewMode] = useState("");
-  const [previewColors, setPreviewColors] = useState(2);
-  const [previewWidth, setPreviewWidth] = useState(400);
-  const [previewHeight, setPreviewHeight] = useState(300);
+  // 预览的颜色模式与屏幕尺寸记在本地，刷新不用重选
+  const [previewColors, setPreviewColors] = usePersistedState("ink_preview_colors", 2);
+  const [previewWidth, setPreviewWidth] = usePersistedState("ink_preview_w", 400);
+  const [previewHeight, setPreviewHeight] = usePersistedState("ink_preview_h", 300);
   const [previewNoCacheOnce, setPreviewNoCacheOnce] = useState(false);
   const [previewCacheHit, setPreviewCacheHit] = useState<boolean | null>(null);
   const [previewLlmStatus, setPreviewLlmStatus] = useState<string | null>(null);
@@ -798,6 +805,10 @@ function ConfigPageInner() {
   const [adaptiveModal, setAdaptiveModal] = useState<{ action: "preview" | "apply" } | null>(null);
   const [adaptiveImageUrls, setAdaptiveImageUrls] = useState<string[]>([]);
   const [adaptiveUploading2, setAdaptiveUploading2] = useState(false);
+
+  // 相册（MY_ALBUM）：选图 → 按屏幕比例裁切 → 上传
+  const [albumModal, setAlbumModal] = useState<{ action: "preview" | "apply" } | null>(null);
+  const [albumImageUrls, setAlbumImageUrls] = useState<string[]>([]);
 
   // 参数弹窗（与 /preview 页面保持一致）
   const [paramModal, setParamModal] = useState<ParamModalState | null>(null);
@@ -1107,6 +1118,14 @@ function ConfigPageInner() {
         else if (cfg.modeOverrides) setModeOverrides(cfg.modeOverrides);
         setIsFocusListening(Boolean(cfg.is_focus_listening ?? Number(cfg.focus_listening || 0) === 1));
         setAlwaysActive(Boolean(cfg.is_always_active ?? Number(cfg.always_active || 0) === 1));
+        const cfgRec = cfg as Record<string, unknown>;
+        const clampPct = (v: unknown) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? Math.max(0, Math.min(200, Math.round(n))) : 100;
+        };
+        setBrightness(clampPct(cfgRec.brightness));
+        setContrast(clampPct(cfgRec.contrast));
+        setSaturation(clampPct(cfgRec.saturation));
         const loadedOverrides = ((cfg.mode_overrides || cfg.modeOverrides || {}) as Record<string, ModeOverride>);
         const adaptiveOv = loadedOverrides?.MY_ADAPTIVE;
         if (adaptiveOv) {
@@ -1115,6 +1134,15 @@ function ConfigPageInner() {
             setAdaptiveImageUrls(urls.filter((u: unknown) => typeof u === "string" && (u as string).trim()) as string[]);
           } else if (typeof adaptiveOv.image_url === "string" && (adaptiveOv.image_url as string).trim()) {
             setAdaptiveImageUrls([adaptiveOv.image_url as string]);
+          }
+        }
+        const albumOv = loadedOverrides?.MY_ALBUM;
+        if (albumOv) {
+          const urls = albumOv.image_urls;
+          if (Array.isArray(urls) && urls.length > 0) {
+            setAlbumImageUrls(urls.filter((u: unknown) => typeof u === "string" && (u as string).trim()) as string[]);
+          } else if (typeof albumOv.image_url === "string" && (albumOv.image_url as string).trim()) {
+            setAlbumImageUrls([albumOv.image_url as string]);
           }
         }
         const memoFromOverride = loadedOverrides?.MEMO?.memo_text;
@@ -1359,6 +1387,9 @@ function ConfigPageInner() {
         is_focus_listening: isFocusListening,
         always_active: alwaysActive,
         timeSlotRules: timeSlotRules,
+        brightness,
+        contrast,
+        saturation,
       };
       const res = await fetch("/api/config", {
         method: "POST",
@@ -1384,7 +1415,8 @@ function ConfigPageInner() {
             ? (refreshQueued
                 ? tr("配置已保存，已通知在线设备尽快同步", "Settings saved, online device notified to sync soon")
                 : tr("配置已保存，设备在线，但同步通知失败", "Settings saved, device is online, but sync notification failed"))
-            : tr("配置已保存，设备当前不在活跃同步状态，将在设备下次上线后生效", "Settings saved. Device is not actively syncing and will update when it comes online"),
+            : tr(`配置已保存，将在设备下次唤醒时生效（约 ${nextWakeLabel}）。短按 BOOT 键可让它立即上线`,
+                `Settings saved. They apply on the next wake-up (about ${nextWakeLabel}). Tap BOOT to bring the device online now`),
         syncResult.onlineNow === null || !refreshQueued ? "info" : "success",
       );
       setPreviewNoCacheOnce(true);
@@ -1423,6 +1455,9 @@ function ConfigPageInner() {
         is_focus_listening: isFocusListening,
         always_active: alwaysActive,
         timeSlotRules: timeSlotRules,
+        brightness,
+        contrast,
+        saturation,
       };
       const res = await fetch("/api/config", {
         method: "POST",
@@ -1484,6 +1519,9 @@ function ConfigPageInner() {
       if (previewColors > 2) params.set("colors", String(previewColors));
       params.set("w", String(previewWidth));
       params.set("h", String(previewHeight));
+      params.set("brightness", String(brightness));
+      params.set("contrast", String(contrast));
+      params.set("saturation", String(saturation));
       if (forceFresh) params.set("no_cache", "1");
       return { m, params, consumeNoCacheOnce };
     }
@@ -1545,9 +1583,12 @@ function ConfigPageInner() {
     if (previewColors > 2) params.set("colors", String(previewColors));
     params.set("w", String(previewWidth));
     params.set("h", String(previewHeight));
+    params.set("brightness", String(brightness));
+    params.set("contrast", String(contrast));
+    params.set("saturation", String(saturation));
     if (forceFresh || locationChanged || hasModeOverride) params.set("no_cache", "1");
     return { m, params, consumeNoCacheOnce };
-  }, [config, currentLocation, mac, memoText, modeOverrides, previewColors, previewWidth, previewHeight, previewMode, previewNoCacheOnce, sanitizeModeOverride]);
+  }, [config, currentLocation, mac, memoText, modeOverrides, previewColors, previewWidth, previewHeight, previewMode, previewNoCacheOnce, sanitizeModeOverride, brightness, contrast, saturation]);
 
   const ownerUsername = useMemo(
     () => deviceMembers.find((member) => member.role === "owner")?.username || "",
@@ -1839,9 +1880,25 @@ function ConfigPageInner() {
     loadFavorites();
   }, [mac, loadFavorites]);
 
+  // Keep the device status badge live: the device only comes online for a few
+  // seconds per refresh cycle (or a 10 min window after a button wake), so a
+  // one-shot read on mount would leave the page stuck on a stale snapshot.
   useEffect(() => {
     if (!mac) return;
     loadRuntimeMode();
+    const tick = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      loadRuntimeMode();
+    };
+    const timer = window.setInterval(tick, 10000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") loadRuntimeMode();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [mac, loadRuntimeMode]);
 
   useEffect(() => {
@@ -2092,6 +2149,10 @@ function ConfigPageInner() {
       setAdaptiveModal({ action: "preview" });
       return;
     }
+    if (modeId === "MY_ALBUM") {
+      setAlbumModal({ action: "preview" });
+      return;
+    }
     if (requiresParamModal(modeId)) {
       openParamModal(modeId, "preview");
       return;
@@ -2106,6 +2167,10 @@ function ConfigPageInner() {
     const modeId = (m || "").toUpperCase();
     if (modeId === "MY_ADAPTIVE" && !selectedModes.has(modeId)) {
       setAdaptiveModal({ action: "apply" });
+      return;
+    }
+    if (modeId === "MY_ALBUM" && !selectedModes.has(modeId)) {
+      setAlbumModal({ action: "apply" });
       return;
     }
     if (requiresParamModal(modeId) && !selectedModes.has(modeId)) {
@@ -2245,6 +2310,9 @@ function ConfigPageInner() {
         is_focus_listening: isFocusListening,
         always_active: alwaysActive,
         timeSlotRules,
+        brightness,
+        contrast,
+        saturation,
       };
       const res = await fetch("/api/config", {
         method: "POST",
@@ -2424,11 +2492,30 @@ function ConfigPageInner() {
         return tr("当前未命中缓存，将生成新的预览。是否继续？", "No cache hit. A new preview will be generated. Continue?");
     }
   }, [ownerUsername, tr]);
+  // When the device is asleep, tell the user when it will next be reachable
+  // instead of a vague "will apply later".
+  const nextWakeLabel = (() => {
+    if (!lastSeen) return tr("下个刷新周期", "next refresh cycle");
+    const seenAt = new Date(lastSeen).getTime();
+    if (!Number.isFinite(seenAt)) return tr("下个刷新周期", "next refresh cycle");
+    return new Date(seenAt + refreshMin * 60000).toLocaleTimeString(isEn ? "en-US" : "zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  })();
   const statusLabel = !isOnline
     ? tr("离线", "Offline")
     : runtimeMode === "active"
-    ? tr("活跃状态", "Active")
-    : tr("间歇状态", "Interval");
+    ? tr("在线 · 可立即同步", "Online · ready")
+    : tr(`间歇模式 · 每 ${refreshMin} 分钟唤醒`, `Interval · wakes every ${refreshMin} min`);
+  const statusHint = !isOnline
+    ? tr("超过一个刷新周期没有心跳，检查电源和 Wi-Fi", "No heartbeat for over one refresh cycle — check power and Wi-Fi")
+    : runtimeMode === "active"
+    ? tr("设备正在实时轮询，配置保存后会立即推送", "Device is polling live, saved settings are pushed immediately")
+    : tr(
+        "间歇模式：每次刷新后设备仍会在线约 5 分钟供你一键推图，之后才休眠；短按 BOOT 可立即上线 10 分钟",
+        "Interval mode: the device stays online for ~5 min after each refresh so you can push a new image, then sleeps. Tap BOOT to wake it for 10 min",
+      );
   const statusClass = !isOnline
     ? "bg-paper-dark text-ink-light border border-ink/10"
     : runtimeMode === "active"
@@ -2449,7 +2536,7 @@ function ConfigPageInner() {
     : TABS;
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-10">
+    <div className="mx-auto max-w-7xl px-6 py-10">
       {/* Hidden file picker for MY_ADAPTIVE multi-image upload */}
       <input
         ref={adaptiveFileInputRef}
@@ -2511,6 +2598,7 @@ function ConfigPageInner() {
             statusIconClass={statusIconClass}
             statusClass={statusClass}
             statusLabel={statusLabel}
+            statusHint={statusHint}
             lastSeen={lastSeen}
             isEn={isEn}
             localeConfigPath={withLocalePath(locale, "/config")}
@@ -2722,7 +2810,8 @@ function ConfigPageInner() {
             {/* Modes Tab */}
             {activeTab === "modes" && (
               <div className="space-y-6">
-                <div className="grid grid-cols-1 lg:grid-cols-[520px_1fr] gap-6 items-start">
+                <div className="flex flex-col lg:flex-row gap-6 items-start">
+                  <div className="w-full lg:w-[560px] lg:shrink min-w-0">
                   <ModeSelector
                     tr={tr}
                     selectedModes={selectedModes}
@@ -2742,7 +2831,10 @@ function ConfigPageInner() {
                     onScreenSizeChange={(w, h) => { setPreviewWidth(w); setPreviewHeight(h); }}
                   />
 
-                  <div ref={previewPanelRef}>
+                  </div>
+
+                  {/* 右列吃掉剩余宽度；min-w-[320px] 保证预览不被压没（3.98" = 310px） */}
+                  <div ref={previewPanelRef} className="w-full min-w-0 lg:flex-1 lg:min-w-[320px]">
                   <EInkPreviewPanel
                     screenW={previewWidth}
                     screenH={previewHeight}
@@ -2953,6 +3045,60 @@ function ConfigPageInner() {
                   availableModes={selectedModes ? Array.from(selectedModes) : []}
                   modeMeta={modeMeta}
                 />
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">{tr("图像调色", "Image Tuning")}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <p className="text-xs text-ink-light leading-5">
+                      {tr(
+                        "只作用于模式里的图片内容（照片、AI 配图、上传图），文字由纯黑纯白绘制、不受影响。100 为原始值。",
+                        "Applies to image blocks only (photos, AI art, uploads). Text is drawn in pure black/white and is unaffected. 100 = original.",
+                      )}
+                    </p>
+                    {[
+                      { key: "b", label: tr("亮度", "Brightness"), value: brightness, set: setBrightness, off: false, hint: "" },
+                      { key: "c", label: tr("对比度", "Contrast"), value: contrast, set: setContrast, off: false, hint: "" },
+                      {
+                        key: "s",
+                        label: tr("饱和度", "Saturation"),
+                        value: saturation,
+                        set: setSaturation,
+                        off: previewColors < 3,
+                        hint: tr("仅对三色/四色屏生效，当前预览为黑白", "Only applies to 3/4-color panels; preview is monochrome"),
+                      },
+                    ].map((item) => (
+                      <div key={item.key} className={item.off ? "opacity-50" : undefined}>
+                        <div className="flex items-center justify-between text-sm mb-1">
+                          <span className="flex items-baseline gap-2">
+                            {item.label}
+                            <span className="font-mono text-xs text-ink-light">{item.value}</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => item.set(100)}
+                            disabled={item.off || item.value === 100}
+                            className="text-xs text-ink-light hover:text-ink disabled:opacity-30"
+                          >
+                            {tr("复位", "Reset")}
+                          </button>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={200}
+                          step={5}
+                          value={item.value}
+                          disabled={item.off}
+                          onChange={(e) => item.set(Number(e.target.value))}
+                          className="w-full cursor-pointer disabled:cursor-not-allowed"
+                          style={{ accentColor: "var(--color-ink)" }}
+                        />
+                        {item.hint ? <p className="text-[11px] text-ink-light mt-1">{item.hint}</p> : null}
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base">{tr("设备活跃状态", "Device Active State")}</CardTitle>
@@ -3710,6 +3856,25 @@ function ConfigPageInner() {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {/* 相册图片管理（选图 → 按屏幕比例裁切 → 上传） */}
+      {albumModal ? (
+        <AlbumModal
+          action={albumModal.action}
+          initialUrls={albumImageUrls}
+          screenWidth={previewWidth}
+          screenHeight={previewHeight}
+          tr={tr}
+          upload={uploadLocalImage}
+          onCancel={() => setAlbumModal(null)}
+          onConfirm={async (urls) => {
+            const action = albumModal.action;
+            setAlbumImageUrls(urls);
+            setAlbumModal(null);
+            await commitModalAction("MY_ALBUM", action, { image_urls: urls, image_url: urls[0] || "" });
+          }}
+        />
       ) : null}
 
       {/* 参数弹窗：与 /preview 页面一致（预览/加入轮播都会触发） */}

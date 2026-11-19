@@ -100,6 +100,10 @@ logger = logging.getLogger(__name__)
 
 DISCOVERY_WINDOW_MINUTES = 15
 ONLINE_WINDOW_MINUTES = 15
+# The device polls /device/{mac}/state every ~5s while awake. Allow a few missed
+# polls (a render can block the loop for a couple of seconds) before reporting it
+# as sleeping.
+ACTIVE_POLL_WINDOW_SECONDS = 20
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -348,11 +352,33 @@ async def build_image(
     user_api_key: Optional[str] = None,
     intent_only: bool = False,
     colors: int = 2,
+    image_tune: Optional[dict] = None,
 ):
     from core.mode_registry import get_registry
+    from core.image_processing import set_image_adjust
 
     battery_pct = calc_battery_pct(v)
     config = await get_active_config(mac) if mac else None
+    # 设备级图像调色（亮度/对比度/饱和度，0-200，100 为原值）注入渲染上下文。
+    # image_tune 用于 Web 预览时传入未保存的滑杆值，优先于库里的配置。
+    # 无 mac（纯 Web 预览）或旧配置时使用默认值，不影响既有效果。
+    if image_tune:
+        _tune = (
+            image_tune.get("brightness", 100),
+            image_tune.get("contrast", 100),
+            image_tune.get("saturation", 100),
+        )
+    elif config:
+        _tune = (
+            config.get("brightness", 100),
+            config.get("contrast", 100),
+            config.get("saturation", 100),
+        )
+    else:
+        _tune = (100, 100, 100)
+    set_image_adjust(*_tune)
+    # 调色参数参与预览缓存 key，拖动滑杆才能看到变化（默认值不参与，避免击穿已有缓存）
+    tune_key = None if _tune == (100, 100, 100) else "-".join(str(v) for v in _tune)
     persona = await resolve_mode(mac, config, persona_override, force_next=force_next)
     owner_user_id: Optional[int] = None
     if mac:
@@ -635,7 +661,7 @@ async def build_image(
 
     if not mac and is_mode_cacheable and not skip_cache:
         # This is a preview request without device mac - use preview cache
-        preview_cache_key = content_cache._get_preview_cache_key(persona, screen_w, screen_h, preview_city_override, mode_override_hash, preview_ui_language)
+        preview_cache_key = content_cache._get_preview_cache_key(persona, screen_w, screen_h, preview_city_override, mode_override_hash, preview_ui_language, tune_key)
         cached_img = await content_cache.get_preview(
             persona,
             screen_w,
@@ -643,6 +669,7 @@ async def build_image(
             city_override=preview_city_override,
             mode_override_hash=mode_override_hash,
             ui_language=preview_ui_language,
+            image_tune=tune_key,
         )
         if cached_img:
             cache_hit = True
@@ -953,6 +980,7 @@ async def build_image(
                 city_override=preview_city_override,
                 mode_override_hash=mode_override_hash,
                 ui_language=preview_ui_language,
+                image_tune=tune_key,
             )
 
     if mac:

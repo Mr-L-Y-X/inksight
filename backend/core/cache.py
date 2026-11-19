@@ -79,6 +79,33 @@ class ContentCache:
             except Exception as exc:
                 logger.warning("[CACHE] Failed to clear persistent cache: %s", exc)
 
+    async def invalidate_mac(self, mac: str) -> None:
+        """清掉某台设备的渲染缓存（内存 + 持久层）。
+
+        配置变更（尤其是图像调色、内容来源）后调用，避免设备继续拿到旧图。
+        """
+        prefix = f"{(mac or '').upper()}:"
+        if prefix == ":":
+            return
+        async with self._lock:
+            stale = [k for k in self._cache if k.startswith(prefix)]
+            for k in stale:
+                del self._cache[k]
+        if stale:
+            logger.info("[CACHE] Invalidated %d in-memory entries for mac=%s", len(stale), mac)
+        if not self._persistent_cache_available():
+            return
+        try:
+            async with aiosqlite.connect(_CACHE_DB_PATH) as db:
+                cursor = await db.execute(
+                    "DELETE FROM image_cache WHERE cache_key LIKE ?", (prefix + "%",)
+                )
+                await db.commit()
+                if cursor.rowcount:
+                    logger.info("[CACHE] Invalidated %d persistent entries for mac=%s", cursor.rowcount, mac)
+        except Exception as exc:
+            logger.warning("[CACHE] Failed to invalidate persistent cache for mac=%s: %s", mac, exc)
+
     def _get_cache_key(
         self, mac: str, persona: str,
         screen_w: int = SCREEN_WIDTH, screen_h: int = SCREEN_HEIGHT,
@@ -89,7 +116,7 @@ class ContentCache:
     def _get_preview_cache_key(
         self, persona: str, screen_w: int, screen_h: int,
         city_override: Optional[str] = None, mode_override_hash: Optional[str] = None,
-        ui_language: Optional[str] = None,
+        ui_language: Optional[str] = None, image_tune: Optional[str] = None,
     ) -> str:
         """Generate cache key for preview requests (no mac required)."""
         persona = (persona or "").upper()
@@ -101,6 +128,9 @@ class ContentCache:
             parts.append(f"cfg:{mode_override_hash}")
         if ui_language:
             parts.append(f"lang:{ui_language}")
+        # 调色参数参与 key：否则拖动亮度/对比度滑杆会命中旧图，看不到变化
+        if image_tune:
+            parts.append(f"tune:{image_tune}")
         return ":".join(parts)
 
     def _persistent_cache_available(self) -> bool:
@@ -196,13 +226,13 @@ class ContentCache:
     async def get_preview(
         self, persona: str, screen_w: int, screen_h: int,
         city_override: Optional[str] = None, mode_override_hash: Optional[str] = None,
-        ui_language: Optional[str] = None,
+        ui_language: Optional[str] = None, image_tune: Optional[str] = None,
     ) -> Optional[Image.Image]:
         """Get cached preview image if available and not expired."""
         if DISABLE_CACHE:
             return None
         async with self._lock:
-            key = self._get_preview_cache_key(persona, screen_w, screen_h, city_override, mode_override_hash, ui_language)
+            key = self._get_preview_cache_key(persona, screen_w, screen_h, city_override, mode_override_hash, ui_language, image_tune)
             if key in self._cache:
                 img, timestamp = self._cache[key]
                 if datetime.now() - timestamp < timedelta(minutes=self.PREVIEW_CACHE_TTL_MINUTES):
@@ -226,13 +256,13 @@ class ContentCache:
         self, persona: str, img: Image.Image,
         screen_w: int, screen_h: int,
         city_override: Optional[str] = None, mode_override_hash: Optional[str] = None,
-        ui_language: Optional[str] = None,
+        ui_language: Optional[str] = None, image_tune: Optional[str] = None,
     ):
         """Store preview image in cache."""
         if DISABLE_CACHE:
             return
         async with self._lock:
-            key = self._get_preview_cache_key(persona, screen_w, screen_h, city_override, mode_override_hash, ui_language)
+            key = self._get_preview_cache_key(persona, screen_w, screen_h, city_override, mode_override_hash, ui_language, image_tune)
             img_copy = img.copy()
             self._cache[key] = (img_copy, datetime.now())
             if self._persistent_cache_available():

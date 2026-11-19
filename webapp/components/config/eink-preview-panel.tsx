@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { Eye, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getDisplayWidth } from "@/components/ui/screen-size-select";
 
 export function EInkPreviewPanel({
   tr,
@@ -37,6 +38,15 @@ export function EInkPreviewPanel({
   screenW?: number;
   screenH?: number;
 }) {
+  // 预览按**物理尺寸**显示而不是按像素 1:1——3.98" 是 768×552（238 DPI），
+  // 像素比 5.83"（648×480，138 DPI）多，但物理上更小。
+  // dispW 已在 screen-size-select 里统一放大 25%（观感比 CSS 名义尺寸小），这里直接用。
+  //
+  // 只靠 CSS 约束：width = 实物宽度，max-width: 100% 让它在右栏放不下时自动缩，
+  // aspect-ratio 保证高度跟着按比例走。**不要用 JS 量宽度**——首帧量到的值会被
+  // 布局稳定后的真实值甩在后面，缩放系数就错了。
+  const rawW = getDisplayWidth(screenW, screenH);
+
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -45,42 +55,47 @@ export function EInkPreviewPanel({
           <span className="text-base font-semibold text-ink">{previewModeLabel}</span>
         </CardTitle>
       </CardHeader>
-      {/* keep sizing consistent with /preview page */}
-      <CardContent
-        className="flex flex-col p-0"
-        style={{ width: `${screenW}px`, height: `calc(55vh - 80px)` }}
-      >
-        <div className="border border-ink/10 rounded-sm bg-paper flex flex-col items-center justify-center flex-1 w-full">
-          {previewLoading ? (
-            <div className="flex items-center justify-center w-full">
-              <div className="text-center">
-                <Loader2 size={32} className="animate-spin mx-auto text-ink-light mb-3" />
-                <p className="text-sm text-ink-light">{previewStatusText || tr("预览生成中...", "Generating preview...")}</p>
+      {/* 内联 padding:0 —— CardContent 自带 p-6，靠 class 覆盖会被样式顺序吃掉 */}
+      <CardContent className="p-0" style={{ padding: 0 }}>
+        {/* 屏幕本体：宽度=实物宽度，图片直接铺满，不留内边距 */}
+        <div className="flex justify-center">
+          <div
+            className="relative border border-ink/15 rounded-sm bg-paper flex flex-col items-center justify-center overflow-hidden"
+            style={{
+              width: `${rawW}px`,
+              maxWidth: "100%",
+              aspectRatio: `${screenW} / ${screenH}`,
+            }}
+          >
+            {previewLoading ? (
+              <div className="text-center px-3">
+                <Loader2 size={28} className="animate-spin mx-auto text-ink-light mb-2" />
+                <p className="text-[13px] text-ink-light">
+                  {previewStatusText || tr("预览生成中...", "Generating preview...")}
+                </p>
               </div>
-            </div>
-          ) : previewImg ? (
-            <div className="flex flex-col items-center gap-2 w-full px-4">
-              <div
-                className="relative w-full max-w-xl / max-w-none bg-white border border-ink/20 rounded-sm overflow-hidden"
-                style={{ aspectRatio: `${screenW}/${screenH}` }}
-              >
-                <Image src={previewImg} alt="Preview" fill unoptimized className="object-contain" />
+            ) : previewImg ? (
+              <Image src={previewImg} alt="Preview" fill unoptimized className="object-contain" />
+            ) : (
+              <div className="text-center px-3">
+                <Eye size={28} className="mx-auto text-ink-light mb-2" />
+                <p className="text-[13px] text-ink-light">
+                  {tr("点击任意模式的「预览」查看效果", "Click Preview on any mode to view output")}
+                </p>
               </div>
-              {previewLlmStatus ? (
-                <p className="text-[11px] text-ink-light text-center px-4">{previewLlmStatus}</p>
-              ) : null}
-            </div>
-          ) : (
-            <div className="flex items-center justify-center w-full">
-              <div className="text-center">
-                <Eye size={32} className="mx-auto text-ink-light mb-3" />
-                <p className="text-sm text-ink-light">{tr("点击任意模式的「预览」查看效果", "Click Preview on any mode to view output")}</p>
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
-        <div className="border-t border-ink/10 p-3 bg-white">
+        {previewImg && !previewLoading && previewLlmStatus ? (
+          <p className="pt-2 px-3 text-[13px] text-ink-light text-center">{previewLlmStatus}</p>
+        ) : null}
+
+        <p className="pt-2 text-[13px] text-ink-light text-center">
+          {tr("按实物比例显示", "Shown at physical scale")}
+        </p>
+
+        <div className="mt-3 border-t border-ink/10 p-3 bg-white">
           {previewImg && !previewLoading && previewCacheHit === true ? (
             <div className="mb-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-sm px-2 py-1.5">
               {tr(
@@ -116,4 +131,3 @@ export function EInkPreviewPanel({
     </Card>
   );
 }
-

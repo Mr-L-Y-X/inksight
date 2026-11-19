@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from api.shared import (
+    ACTIVE_POLL_WINDOW_SECONDS,
     DISCOVERY_WINDOW_MINUTES,
     ONLINE_WINDOW_MINUTES,
     _preview_push_queue,
@@ -124,26 +125,31 @@ async def device_state(
     if ota_url and "/firmware/download" in ota_url and "/api/firmware/download" not in ota_url:
         state["ota_url"] = ota_url.replace("/firmware/download", "/api/firmware/download")
 
-    runtime_mode = "interval"
     last_poll = state.get("last_state_poll_at", "")
     recent_poll = False
     if isinstance(last_poll, str) and last_poll:
         try:
             delta = (datetime.now() - datetime.fromisoformat(last_poll)).total_seconds()
-            recent_poll = delta <= 8
+            # The device polls /state every ~5s while awake but a render can take
+            # longer, so keep a generous window before declaring it asleep.
+            recent_poll = delta <= ACTIVE_POLL_WINDOW_SECONDS
         except ValueError:
             logger.warning("[DEVICE] Invalid last_state_poll_at for %s: %s", mac, last_poll, exc_info=True)
             recent_poll = False
 
-    explicit_mode = str(state.get("runtime_mode") or "").lower()
-    if explicit_mode == "active":
-        runtime_mode = "active" if recent_poll else "interval"
-    elif explicit_mode == "interval":
-        runtime_mode = "interval"
-    elif recent_poll:
-        runtime_mode = "active"
+    # A live poll outranks everything else: the device is answering us right
+    # now. runtime_mode is written by the firmware just before it sleeps, so
+    # letting it win made the badge stick on "interval" while the device was
+    # actually online and polling (the reason the page looked wrong).
+    state["runtime_mode"] = "active" if recent_poll else "interval"
 
-    state["runtime_mode"] = runtime_mode
+    # The heartbeat is throttled to one per 10 min, so a device that just came
+    # online can still look offline by that measure. A live poll fixes that;
+    # report the poll time itself so "last seen" stays truthful.
+    if recent_poll:
+        state["is_online"] = True
+        state["last_seen"] = last_poll
+
     return state
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from urllib.parse import urlsplit
@@ -19,6 +20,49 @@ from api.shared import (
     limiter,
 )
 from core.errors import InkSightError
+
+
+_LAN_NETWORKS = tuple(
+    ipaddress.ip_network(net)
+    for net in (
+        "127.0.0.0/8",      # 环回
+        "10.0.0.0/8",       # 私有
+        "172.16.0.0/12",    # 私有
+        "192.168.0.0/16",   # 私有（含 Windows 热点 192.168.137.1）
+        "169.254.0.0/16",   # 链路本地
+    )
+)
+
+
+def _is_lan_host(host: str) -> bool:
+    """Host 是否为局域网/环回字面 IP（设备直连电脑热点或局域网时使用）。"""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(ip in net for net in _LAN_NETWORKS)
+
+
+class LanTrustedHostMiddleware(TrustedHostMiddleware):
+    """域名白名单 + 局域网 IP 放行。
+
+    墨水屏设备通常直接访问 http://<电脑局域网 IP>:8080，Host 头是随网络
+    变化的内网 IP，无法预先写进 allowed_hosts；其余来源仍按白名单校验。
+    """
+
+    async def __call__(self, scope, receive, send) -> None:  # type: ignore[no-untyped-def]
+        if scope["type"] in ("http", "websocket"):
+            host_header = ""
+            for key, value in scope.get("headers", ()):
+                if key == b"host":
+                    host_header = value.decode("latin-1")
+                    break
+            if host_header:
+                bare = host_header.split(":")[0].strip("[]")
+                if _is_lan_host(bare):
+                    await self.app(scope, receive, send)
+                    return
+        await super().__call__(scope, receive, send)
 
 
 def _build_allowed_hosts() -> list[str]:
@@ -152,7 +196,7 @@ _allowed_hosts = _build_allowed_hosts()
 app = FastAPI(title="InkSight API", version="1.1.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_middleware(
-    TrustedHostMiddleware,
+    LanTrustedHostMiddleware,
     allowed_hosts=_allowed_hosts,
 )
 app.add_middleware(

@@ -10,6 +10,7 @@ export function DeviceInfo({
   statusIconClass,
   statusClass,
   statusLabel,
+  statusHint,
   lastSeen,
   isEn,
   localeConfigPath,
@@ -23,6 +24,7 @@ export function DeviceInfo({
   statusIconClass: string;
   statusClass: string;
   statusLabel: string;
+  statusHint?: string;
   lastSeen: string | null;
   isEn: boolean;
   localeConfigPath: string;
@@ -43,7 +45,7 @@ export function DeviceInfo({
             {currentUserRole === "owner" ? "Owner" : "Member"}
           </span>
         )}
-        <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs ${statusClass}`}>
+        <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs ${statusClass}`} title={statusHint}>
           {statusLabel}
         </span>
         {lastSeen && (

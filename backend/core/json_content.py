@@ -712,8 +712,8 @@ async def generate_json_mode_content(
                 if k in {"city", "llm_provider", "llm_model", "image_provider", "image_model"}:
                     continue
                 content[k] = v
-        # MY_ADAPTIVE multi-image cycling: pick next image from image_urls array
-        if mode_id == "MY_ADAPTIVE" and isinstance(override, dict):
+        # MY_ADAPTIVE / MY_ALBUM 多图轮播：从 image_urls 里按索引取下一张
+        if mode_id in ("MY_ADAPTIVE", "MY_ALBUM") and isinstance(override, dict):
             image_urls = override.get("image_urls")
             if isinstance(image_urls, list) and image_urls:
                 urls = [u for u in image_urls if isinstance(u, str) and u.strip()]

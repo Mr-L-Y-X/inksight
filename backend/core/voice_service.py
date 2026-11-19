@@ -332,6 +332,8 @@ _MODE_SWITCH_KEYWORDS: dict[str, str] = {
     "艺术": "ARTWALL",
     "AI艺术": "ARTWALL",
     "相框": "MY_ADAPTIVE",
+    "相册": "MY_ALBUM",
+    "照片": "MY_ALBUM",
     "语录": "MY_QUOTE",
 }
 

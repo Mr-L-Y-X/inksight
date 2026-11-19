@@ -69,14 +69,14 @@ export function Navbar() {
   if (!hydrated) {
     return (
       <header className="sticky top-0 z-40 w-full border-b border-ink/10 bg-white/80 backdrop-blur-md">
-        <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6" />
+        <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6" />
       </header>
     );
   }
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-ink/10 bg-white/80 backdrop-blur-md">
-      <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
+      <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
         <Link href={withLocalePath(locale, "/")} className="flex items-center gap-2 group">
           <Image 
             src="/images/logo.png" 

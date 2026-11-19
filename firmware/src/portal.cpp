@@ -1,7 +1,7 @@
 #include "portal.h"
 #include "config.h"
 #include "storage.h"
-#include "network.h"
+#include "network_api.h"
 
 #include <WiFi.h>
 #include <WebServer.h>

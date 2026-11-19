@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from api.shared import ensure_web_or_device_access, logger
 from core.activity_store import log_user_activity
 from core.auth import is_admin_authorized, require_admin, validate_mac_param
+from core.cache import content_cache
 from core.config_store import (
     activate_config,
     get_active_config,
@@ -53,6 +54,9 @@ async def post_config(
     )
     config_id = await save_config(mac, data)
     await set_pending_refresh(mac, True)
+    # 配置变更后清掉该设备的渲染缓存：调色、内容来源等都会改变最终出图，
+    # 不清的话设备下次唤醒会直接拿到按旧配置渲染的缓存图。
+    await content_cache.invalidate_mac(mac)
     if access and access.get("mode") == "user":
         await log_user_activity(
             int(access["user_id"]),

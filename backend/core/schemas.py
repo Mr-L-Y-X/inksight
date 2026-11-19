@@ -96,6 +96,18 @@ class ConfigRequest(BaseModel):
         default=False,
         description="是否始终保持设备活跃状态",
     )
+    brightness: int = Field(
+        default=100, ge=0, le=200,
+        description="图像亮度 0-200，100 为原值（仅作用于图片块）",
+    )
+    contrast: int = Field(
+        default=100, ge=0, le=200,
+        description="图像对比度 0-200，100 为原值（仅作用于图片块）",
+    )
+    saturation: int = Field(
+        default=100, ge=0, le=200,
+        description="图像饱和度 0-200，100 为原值（仅对 3/4 色屏生效）",
+    )
 
     @field_validator("mac")
     @classmethod

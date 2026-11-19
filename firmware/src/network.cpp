@@ -1,4 +1,4 @@
-#include "network.h"
+#include "network_api.h"
 #include "config.h"
 #include "storage.h"
 #include "certs.h"
@@ -843,12 +843,13 @@ bool hasPendingRemoteAction(bool *shouldExitLive) {
         String body = http.getString();
         http.end();
 
-        if (shouldExitLive) {
-            bool intervalRequested =
-                body.indexOf("\"runtime_mode\":\"interval\"") >= 0 ||
-                body.indexOf("\"runtime_mode\": \"interval\"") >= 0;
-            *shouldExitLive = intervalRequested;
-        }
+        // Do NOT treat runtime_mode=="interval" as "leave live mode". That field
+        // is a status echo the backend derives from last_state_poll_at, so a
+        // device that has just woken reads its own stale "interval" and puts
+        // itself straight back to sleep — a self-sustaining loop that kept the
+        // device offline (and the config page stuck on "interval").
+        // Sleep timing is owned locally by the online window instead.
+        (void)shouldExitLive;
 
         bool pendingRefresh =
             body.indexOf("\"pending_refresh\":1") >= 0 ||

@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { localeFromPathname, t, withLocalePath } from "@/lib/i18n";
 import { cleanLocationValue, type LocationValue } from "@/lib/locations";
 import { authHeaders, fetchCurrentUser } from "@/lib/auth";
+import { usePersistedState } from "@/lib/use-persisted-state";
 import { ColorSelect } from "@/components/ui/color-select";
 import { ScreenSizeSelect } from "@/components/ui/screen-size-select";
 import { CalendarReminders } from "@/components/config/calendar-reminders";
@@ -113,9 +114,10 @@ export default function ExperiencePage() {
   const [modesError, setModesError] = useState<string | null>(null);
   // do not preselect any mode
   const [previewMode, setPreviewMode] = useState("");
-  const [previewColors, setPreviewColors] = useState(2);
-  const [previewWidth, setPreviewWidth] = useState(400);
-  const [previewHeight, setPreviewHeight] = useState(300);
+  // 预览的颜色模式与屏幕尺寸记在本地，刷新不用重选（key 与 /config 共用）
+  const [previewColors, setPreviewColors] = usePersistedState("ink_preview_colors", 2);
+  const [previewWidth, setPreviewWidth] = usePersistedState("ink_preview_w", 400);
+  const [previewHeight, setPreviewHeight] = usePersistedState("ink_preview_h", 300);
   const [previewModeNameOverride, setPreviewModeNameOverride] = useState<string | null>(null);
 
   const [city] = useState("杭州");

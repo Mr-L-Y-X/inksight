@@ -10,9 +10,9 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{--bk:#1a1a1a;--gy:#888;--bg:#fafaf7;--bd:#d4d4cf;--f:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--fs:'Georgia',serif}
-html{font-size:16px;-webkit-font-smoothing:antialiased;overflow-y:scroll}
-body{font-family:var(--f);background:linear-gradient(135deg,#f5f5f0,#e8e8e0);color:var(--bk);line-height:1.6;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
-.card{background:#fff;border-radius:20px;box-shadow:0 8px 40px rgba(0,0,0,.08);width:100%;max-width:380px;padding:32px 24px}
+html{font-size:16px;-webkit-font-smoothing:antialiased}
+body{font-family:var(--f);background:linear-gradient(135deg,#f5f5f0,#e8e8e0);color:var(--bk);line-height:1.6;min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:16px;-webkit-overflow-scrolling:touch}
+.card{position:relative;background:#fff;border-radius:20px;box-shadow:0 8px 40px rgba(0,0,0,.08);width:100%;max-width:380px;margin:auto 0;padding:32px 24px}
 .hdr{text-align:center;margin-bottom:24px}
 .logo{width:50px;height:50px;background:var(--bk);border-radius:14px;margin:0 auto 12px;display:flex;align-items:center;justify-content:center;color:#fff;font-family:var(--fs);font-size:1.5rem;font-weight:700}
 .hdr h1{font-family:var(--fs);font-size:1.4rem;font-weight:700;margin-bottom:2px}
@@ -45,7 +45,7 @@ body{font-family:var(--f);background:linear-gradient(135deg,#f5f5f0,#e8e8e0);col
 .wi{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid var(--bd);border-radius:8px;margin-bottom:6px;cursor:pointer;background:#fff}
 .wi:hover{border-color:var(--bk);background:var(--bg)}
 .wi.sel{border-color:var(--bk);background:var(--bg)}
-.wn{font-size:.85rem;font-weight:500;display:flex;align-items:center;gap:6px}
+.wn{font-size:.85rem;font-weight:500;display:flex;align-items:center;gap:6px;min-width:0;overflow-wrap:anywhere}
 .wa{display:flex;align-items:center;gap:6px;flex-shrink:0}
 .wc{background:var(--bk);border:none;cursor:pointer;color:#fff;padding:5px 8px;border-radius:6px;font-size:.72rem;font-weight:600;line-height:1;flex-shrink:0}
 .wc:hover{background:#333}
@@ -104,7 +104,7 @@ body{font-family:var(--f);background:linear-gradient(135deg,#f5f5f0,#e8e8e0);col
 </div>
 <div class="wtabs">
 <div class="wtab" id="wtScan" onclick="switchWTab('scan')">选择网络</div>
-<div class="wtab act" id="wtMan" onclick="switchWTab('manual')">手动输入</div>
+<div class="wtab act" id="wtMan" onclick="switchWTab('manual',true)">手动输入</div>
 </div>
 <div id="wScan" class="hidden">
 <div id="wScanLoading" style="text-align:center;padding:20px 0;color:var(--gy);font-size:.85rem">
@@ -140,17 +140,21 @@ body{font-family:var(--f);background:linear-gradient(135deg,#f5f5f0,#e8e8e0);col
 </div>
 <div id="srvOfficialTip" style="font-size:.72rem;color:var(--gy)">将使用官方云服务生成内容</div>
 <div id="srvCustomWrap" class="hidden">
-<input type="text" class="inp" id="srvIn" value="http://本地服务IP:8080" placeholder="例如: http://192.168.1.100:8080">
-<div id="srvCusTip1" style="font-size:.68rem;color:var(--gy);margin-top:3px">输入你自己部署的 InkSight 后端地址（含端口）</div>
+<input type="text" class="inp" id="srvIn" value="" placeholder="例如: http://192.168.1.100:8080">
+<div id="srvCusTip1" style="font-size:.68rem;color:var(--gy);margin-top:3px">输入你自己部署的 InkSight 后端地址（含端口）：局域网填 http://内网IP:8080，公网填 https://你的域名</div>
 <div style="margin-top:10px">
 <input type="text" class="inp" id="frontendPortIn" value="3000" placeholder="例如: 3000">
-<div id="srvCusTip2" style="font-size:.68rem;color:var(--gy);margin-top:3px">前端配置页端口，用于重启后跳转到 localhost:端口/config</div>
+<div id="srvCusTip2" style="font-size:.68rem;color:var(--gy);margin-top:3px">前端配置页端口：仅局域网（IP）部署需要，公网域名走 80/443 反代时忽略</div>
 </div>
 </div>
 </div>
 <button class="btn btn-ghost" id="cBtn" onclick="doConnect()"><span class="bt" id="btnConnText">连接并保存</span><div class="sp"></div></button>
 <button class="btn" id="addBtn" onclick="doAddOnly()" style="margin-top:8px;background:var(--bg);color:var(--bk);border:1px solid var(--bd);font-size:.82rem;padding:10px"><span class="bt" id="btnAddText">仅保存到列表</span><div class="sp"></div></button>
 <div id="addHint" style="font-size:.68rem;color:var(--gy);margin-top:5px;text-align:center">连不上的网络（如办公室/手机热点）可仅保存，开机会按顺序尝试</div>
+<div id="doneWrap" class="hidden" style="margin-top:12px">
+<button class="btn btn-ghost" id="doneBtn" onclick="doDone()" style="font-size:.82rem;padding:9px"><span class="bt" id="btnDoneText">完成，重启设备</span><div class="sp"></div></button>
+<div id="doneTip" style="font-size:.68rem;color:var(--gy);margin-top:5px;text-align:center">重启后设备会按列表顺序自动连接，手机会断开热点，请切回家中 WiFi</div>
+</div>
 </div>
 
 <!-- Step 2: Success -->
@@ -203,8 +207,8 @@ srvTitle:"服务器地址",
 srvOff:"官方服务",
 srvCus:"自定义服务",
 srvOffTip:"将使用官方云服务生成内容",
-srvCusTip1:"输入你自己部署的 InkSight 后端地址（含端口）",
-srvCusTip2:"前端配置页端口，用于重启后跳转到 localhost:端口/config",
+srvCusTip1:"输入你自己部署的 InkSight 后端地址（含端口）：局域网填 http://内网IP:8080，公网填 https://你的域名",
+srvCusTip2:"前端配置页端口：仅局域网（IP）部署需要，公网域名走 80/443 反代时忽略",
 srvUrlPh:"例如: http://192.168.1.100:8080",
 srvPortPh:"例如: 3000",
 btnConn:"连接并保存",
@@ -212,6 +216,10 @@ btnAdd:"仅保存到列表",
 btnSavedConn:"连接",
 savedTitle:"已保存网络",
 addHint:"连不上的网络（如办公室/手机热点）可仅保存，开机会按顺序尝试",
+doneTip:"重启后设备会按列表顺序自动连接，手机会断开热点，请切回家中 WiFi",
+btnDone:"完成，重启设备",
+msgLoading:"正在读取设备配置，请稍候...",
+htmlRestDone:"<h2>设备已重启</h2><p style=\"color:#888\">请把手机重新连接到家中的 WiFi，设备会自动联网。</p>",
 msgAddOk:"已保存到列表",
 msgFull:"最多保存 5 个网络",
 msgDelOk:"已删除",
@@ -264,8 +272,8 @@ srvTitle:"Server URL",
 srvOff:"Official",
 srvCus:"Custom",
 srvOffTip:"Will use official cloud service",
-srvCusTip1:"Enter your self-hosted backend URL (with port)",
-srvCusTip2:"Frontend port, used for redirecting to localhost:port/config",
+srvCusTip1:"Self-hosted backend URL (with port): http://LAN-IP:8080 on a LAN, https://your-domain.com in public",
+srvCusTip2:"Frontend port: only needed for LAN (IP) setups; ignored when a domain is served on 80/443",
 srvUrlPh:"e.g. http://192.168.1.100:8080",
 srvPortPh:"e.g. 3000",
 btnConn:"Connect & Save",
@@ -273,6 +281,10 @@ btnAdd:"Save to List",
 btnSavedConn:"Connect",
 savedTitle:"Saved Networks",
 addHint:"Networks not reachable here (office / phone hotspot) can be saved only; tried in order on boot",
+doneTip:"After restart the device connects using the saved order. Your phone leaves the hotspot, switch back to home WiFi.",
+btnDone:"Done, Restart Device",
+msgLoading:"Reading device settings, please wait...",
+htmlRestDone:"<h2>Device Restarted</h2><p style=\"color:#888\">Reconnect your phone to your home WiFi; the device will join it automatically.</p>",
 msgAddOk:"Saved to list",
 msgFull:"Up to 5 networks allowed",
 msgDelOk:"Removed",
@@ -339,6 +351,8 @@ document.getElementById('btnConnText').textContent=t('btnConn');
 document.getElementById('btnAddText').textContent=t('btnAdd');
 document.getElementById('savedTitle').textContent=t('savedTitle');
 document.getElementById('addHint').textContent=t('addHint');
+document.getElementById('btnDoneText').textContent=t('btnDone');
+document.getElementById('doneTip').textContent=t('doneTip');
 document.getElementById('s2Title').textContent=t('s2Title');
 document.getElementById('s2Next').textContent=t('s2Next');
 document.getElementById('s2Auto').textContent=t('s2Auto');
@@ -363,11 +377,12 @@ applyLang();
 
 var OFFICIAL_SERVER='https://web.inksight.site/';
 var OFFICIAL_CONFIG_URL='https://www.inksight.site/config';
-var LOCAL_DEFAULT_SERVER='http://本地服务IP:8080';
+var LOCAL_DEFAULT_SERVER='';
 var LOCAL_DEFAULT_FRONTEND_PORT='3000';
 var ssid='',ctm=null,devMac='',srvUrl='',srvMode='official',pairCode='',frontendPort=LOCAL_DEFAULT_FRONTEND_PORT;
 var hiddenSsids=[];
 var savedMax=5;
+var infoReady=false;
 
 function setStep(n){
 var d1=document.getElementById('d1'),d2=document.getElementById('d2');
@@ -377,11 +392,11 @@ d2.className='dot'+(n===2?' a d':'');
 l1.className='ln'+(n>=2?' d':'');
 }
 
-function switchWTab(mode){
+function switchWTab(mode,focus){
 var ts=document.getElementById('wtScan'),tm=document.getElementById('wtMan');
 var ps=document.getElementById('wScan'),pm=document.getElementById('wMan');
 if(mode==='scan'){ts.classList.add('act');tm.classList.remove('act');ps.classList.remove('hidden');pm.classList.add('hidden');ssid='';reShowList();}
-else{tm.classList.add('act');ts.classList.remove('act');pm.classList.remove('hidden');ps.classList.add('hidden');ssid='';document.getElementById('ssidIn').value='';document.getElementById('ssidIn').focus();}
+else{tm.classList.add('act');ts.classList.remove('act');pm.classList.remove('hidden');ps.classList.add('hidden');ssid='';document.getElementById('ssidIn').value='';if(focus)document.getElementById('ssidIn').focus();}
 }
 
 function normalizeServerUrl(url){
@@ -394,8 +409,16 @@ var base='';
 if(!normalized)return'';
 if(normalized===normalizeServerUrl(OFFICIAL_SERVER))base=OFFICIAL_CONFIG_URL;
 else{
-if(!frontendPort||!/^\d{2,5}$/.test(frontendPort))return'';
-base='http://localhost:'+frontendPort+'/config';
+// 自建部署：/config 由前端（Next）提供，直接拿填写的服务器地址推。
+// 公网走反代 -> https://域名/config；局域网后端 :8080、前端 :3000 同机 -> 换成前端端口。
+var m=/^(https?:\/\/)(\[[^\]]+\]|[^\/:?#]+)(?::(\d+))?([^?#]*)/i.exec(normalized);
+if(!m)return'';
+var scheme=m[1],host=m[2],port=m[3]||'',path=(m[4]||'').replace(/\/+$/,'');
+var isIp=host.charAt(0)==='['||/^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+if(isIp){
+if(frontendPort&&/^\d{2,5}$/.test(frontendPort))port=frontendPort;
+}else if(port==='80'||port==='443'){port='';}
+base=scheme+host+(port?':'+port:'')+path+'/config';
 }
 var qs=[];
 if(devMac)qs.push('prefer_mac='+encodeURIComponent(devMac));
@@ -451,6 +474,7 @@ else{i.type='password';b.innerHTML='<svg width="14" height="14" viewBox="0 0 24 
 }
 
 function setServerForConnect(st){
+if(!infoReady){st.className='st c';st.textContent=t('msgLoading');return false;}
 var sv=srvMode==='official'?OFFICIAL_SERVER:document.getElementById('srvIn').value.trim();
 var fp=srvMode==='official'?LOCAL_DEFAULT_FRONTEND_PORT:document.getElementById('frontendPortIn').value.trim();
 if(sv&&!sv.match(/^https?:\/\//)){st.className='st e';st.textContent=t('errUrl');return false;}
@@ -499,6 +523,8 @@ document.getElementById('pairWrap').classList.remove('hidden');
 document.getElementById('pairCode').textContent=pairCode;
 }
 var c=30;document.getElementById('cdN').textContent=c;
+document.getElementById('cdSuffix').textContent=t('cdSuffix');
+document.getElementById('cdCancelBtn').disabled=false;
 ctm=setInterval(function(){c--;document.getElementById('cdN').textContent=c;
 if(c<=0){clearInterval(ctm);ctm=null;doRestart();}
 },1000);
@@ -520,10 +546,23 @@ document.body.innerHTML=pairCode?'<div style="text-align:center;padding:50px;fon
 },3000);
 }
 
+// 只加了备用网络时用：重启回正常模式，不做配置页跳转（手机此时连着热点，
+// 跳 localhost 是没有服务的）。不调这个按钮，就得干等配网超时。
+function doDone(){
+var st=document.getElementById('pSt');
+var btn=document.getElementById('doneBtn');
+btn.disabled=true;btn.classList.add('ld');
+st.className='st c';st.textContent=t('msgRest2');
+fetch('/restart',{method:'POST'}).catch(function(){});
+setTimeout(function(){
+document.body.innerHTML='<div style="text-align:center;padding:50px;font-family:sans-serif">'+t('htmlRestDone')+'</div>';
+},2000);
+}
+
 function cancelCountdown(){
 if(ctm){clearInterval(ctm);ctm=null;}
 document.getElementById('cdN').textContent='--';
-document.querySelector('.cd').textContent=t('msgCancel');
+document.getElementById('cdSuffix').textContent=' '+t('msgCancel');
 document.getElementById('cdCancelBtn').disabled=true;
 }
 
@@ -542,6 +581,9 @@ pairCode='';
 document.getElementById('pairWrap').classList.add('hidden');
 document.getElementById('pairCode').textContent='--------';
 document.getElementById('cdN').textContent='10';
+document.getElementById('cdSuffix').textContent=t('cdSuffix');
+document.getElementById('cdCancelBtn').disabled=false;
+document.getElementById('doneWrap').classList.add('hidden');
 loadSaved();
 }
 
@@ -630,6 +672,9 @@ st.className='st s';st.textContent=t('msgAddOk');
 document.getElementById('ssidIn').value='';document.getElementById('pwIn').value='';
 ssid='';reShowList();
 renderSaved(d.list);
+document.getElementById('doneWrap').classList.remove('hidden');
+document.getElementById('doneBtn').disabled=false;
+document.getElementById('doneBtn').classList.remove('ld');
 }else{
 st.className='st e';st.textContent=d.msg==='FULL'?t('msgFull'):(d.msg||t('msgReqFail'));
 }
@@ -639,10 +684,7 @@ st.className='st e';st.textContent=t('msgReqFail');
 });
 }
 
-(function(){
-applyLang();
-switchWTab('manual');
-loadSaved();
+function scanNetworks(){
 fetch('/scan').then(function(r){return r.json()}).then(function(d){
 document.getElementById('wScanLoading').style.display='none';
 var ul=document.getElementById('wifiList');
@@ -662,10 +704,12 @@ li.innerHTML='<span class="wn">'+lock+n.ssid+'</span><span class="ws">'+bars+'</
 ul.appendChild(li);
 });
 }).catch(function(){
-document.getElementById('wScanLoading').innerHTML='扫描失败，请刷新页面重试或手动输入';
+document.getElementById('wScanLoading').innerHTML=t('msgScanFail');
 });
+}
 
-fetch('/info').then(function(r){return r.json()}).then(function(d){
+function loadDeviceInfo(){
+return fetch('/info').then(function(r){return r.json()}).then(function(d){
 if(d.mac){devMac=d.mac;document.getElementById('devMAC').textContent=d.mac;}
 if(d.battery)document.getElementById('devBat').textContent=d.battery;
 if(d.server_url){
@@ -679,7 +723,18 @@ switchSrvMode('custom');
 }else{
 switchSrvMode('official');
 }
-}).catch(function(){});
+infoReady=true;
+}).catch(function(){infoReady=true;});
+}
+
+(function(){
+applyLang();
+switchWTab('manual');
+loadSaved();
+// /info 必须先于 /scan 完成：ESP32 的 WebServer 是单线程的，
+// WiFi.scanNetworks() 会阻塞 1-4 秒，若这时用户点了按钮，页面还停在默认的
+// “官方服务”，提交时就会把已保存的自定义后台地址覆盖成官方地址。
+loadDeviceInfo().then(scanNetworks);
 })();
 </script>
 </body>

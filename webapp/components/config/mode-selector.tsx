@@ -158,7 +158,7 @@ function ModeGrid({
                   title={meta.tip}
                 >
                   <div className="text-sm font-semibold">{meta.name}</div>
-                  <div className={`text-[11px] mt-0.5 line-clamp-2 ${isSelected ? "text-white/80" : "text-ink-light"}`}>
+                  <div className={`text-[13px] mt-0.5 line-clamp-2 leading-snug ${isSelected ? "text-white/80" : "text-ink-light"}`}>
                     {meta.tip}
                   </div>
                 </button>

@@ -88,6 +88,7 @@
 // Supported configurations:
 //   4.2"  (400x300) - default
 //   2.9"  (296x128)
+//   3.98" (768x552) - 四色 SE0398NZ07，2bpp
 //   5.83" (648x480)
 //   7.5"  (800x480)
 #ifndef EPD_WIDTH
@@ -135,6 +136,14 @@ static const int   SHORT_PRESS_MIN_MS = 50;   // Minimum short press duration (d
 static const int   LIVE_POLL_MS = 5000;       // Poll interval for pending remote actions
 static const int   LIVE_WIFI_RETRY_MS = 5000; // Retry interval when WiFi is disconnected
 static const unsigned long TEMP_ONLINE_WINDOW_MS = 10UL * 60UL * 1000UL;
+// After a scheduled (timer) refresh the device stays reachable for this long
+// before sleeping, so the web page can push a new image without waiting for the
+// next wake-up. 0 = sleep as soon as the frame is drawn (old behaviour).
+static const unsigned long POST_REFRESH_ONLINE_MS = 5UL * 60UL * 1000UL;
+// 1 = sleep with light sleep (~0.3-0.8 mA) so GPIO9 can wake the board,
+// 0 = deep sleep (~5 uA) in 15 s slices, where a BOOT tap can take 15 s to
+// register because ESP32-C3 deep sleep rejects GPIO9 as a wake source.
+#define SLEEP_USE_LIGHT_SLEEP 1
 static const unsigned long PORTAL_AUTO_TIMEOUT_MS = 3UL * 60UL * 1000UL;
 static const unsigned long PORTAL_MANUAL_TIMEOUT_MS = 10UL * 60UL * 1000UL;
 static const unsigned long HEARTBEAT_INTERVAL_MS = 10UL * 60UL * 1000UL;
