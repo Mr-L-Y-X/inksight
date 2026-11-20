@@ -12,9 +12,6 @@
 #include <LittleFS.h>
 #include <mbedtls/base64.h>
 #include <time.h>
-#if defined(BOARD_PROFILE_ESP32_C3_WROOM02) || defined(BOARD_PROFILE_SMT_WROOM32E) || defined(BOARD_PROFILE_YD_ESP32_S3_N16R8)
-#include <esp_adc_cal.h>
-#endif
 
 // ── Time state ──────────────────────────────────────────────
 int curHour, curMin, curSec;
@@ -171,49 +168,50 @@ bool connectWiFi() {
 }
 
 // ── Battery voltage ─────────────────────────────────────────
-
+// 用 analogReadMilliVolts() 取芯片 eFuse 里的出厂校准结果，不再自己 esp_adc_cal，
+// 也不再假设「满量程 = 3.3V」：C3 在 11dB 档的实际满量程只有 ~3.1V，
+// 按 3.3V 折算会把 4.2V 读成 4.4V 以上。
 float readBatteryVoltage() {
+    static bool adcReady = false;
+    if (!adcReady) {
+        analogReadResolution(12);
+        analogSetAttenuation(ADC_11db);
+        adcReady = true;
+    }
+
     const int SAMPLES = 16;
-    const int DISCARD = 2;  // Discard highest and lowest outliers
-    int readings[SAMPLES];
+    const int DISCARD = 2;  // 去掉最大/最小各 2 个
+    uint16_t mv[SAMPLES];
 
     for (int i = 0; i < SAMPLES; i++) {
-        readings[i] = analogRead(PIN_BAT_ADC);
-        delayMicroseconds(100);
+        mv[i] = (uint16_t)analogReadMilliVolts(PIN_BAT_ADC);
+        delayMicroseconds(200);
     }
 
-    // Sort for outlier removal
+    // 排序后取中间段平均，滤掉单次毛刺
     for (int i = 0; i < SAMPLES - 1; i++)
         for (int j = i + 1; j < SAMPLES; j++)
-            if (readings[i] > readings[j]) {
-                int tmp = readings[i];
-                readings[i] = readings[j];
-                readings[j] = tmp;
+            if (mv[i] > mv[j]) {
+                uint16_t tmp = mv[i];
+                mv[i] = mv[j];
+                mv[j] = tmp;
             }
 
-    // Average middle readings (discard DISCARD highest and lowest)
-    long sum = 0;
-    for (int i = DISCARD; i < SAMPLES - DISCARD; i++)
-        sum += readings[i];
+    uint32_t sum = 0;
+    for (int i = DISCARD; i < SAMPLES - DISCARD; i++) sum += mv[i];
 
-    float avgRaw = (float)sum / (SAMPLES - 2 * DISCARD);
-#if defined(BOARD_PROFILE_ESP32_C3_WROOM02) || defined(BOARD_PROFILE_SMT_WROOM32E)
-    static esp_adc_cal_characteristics_t adcChars;
-    static bool calibrated = false;
-    if (!calibrated) {
-        esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adcChars);
-        calibrated = true;
+    float pinMv = (float)sum / (SAMPLES - 2 * DISCARD);
+
+    // 分压电阻没接时引脚悬空，读数会在几百毫伏乱飘（实测 540~610mV）。
+    // 这种值上报出去会被算成 0% 并写进后台电量曲线，不如直接当没电池。
+    if (pinMv < BAT_ADC_MIN_PIN_MV) {
+        Serial.printf("[BAT] pin=%.0fmV floating (no divider), report 0.00V\n", pinMv);
+        return 0.0f;
     }
 
-    uint32_t mv = esp_adc_cal_raw_to_voltage((uint32_t)avgRaw, &adcChars);
-    float realBatteryVoltage = (mv / 1000.0f) * 2.0f; // R1=10k, R2=10k
-    Serial.printf("[BAT] raw=%.1f adc=%umV vbat=%.2fV\n", avgRaw, (unsigned int)mv, realBatteryVoltage);
+    float realBatteryVoltage = (pinMv / 1000.0f) * BAT_ADC_DIVIDER;
+    Serial.printf("[BAT] pin=%.0fmV vbat=%.2fV\n", pinMv, realBatteryVoltage);
     return realBatteryVoltage;
-#else
-    float realBatteryVoltage = avgRaw * (3.3f / 4095.0f) * 2.0f;
-    Serial.printf("[BAT] raw=%.1f vbat=%.2fV\n", avgRaw, realBatteryVoltage);
-    return realBatteryVoltage;
-#endif
 }
 
 // ── Stream helper ───────────────────────────────────────────
@@ -632,6 +630,17 @@ static bool stream2bppToPanel(WiFiClient *stream, uint32_t *checksumOut) {
 bool fetchBMP(bool nextMode, bool *isFallback, String *renderedModeIdOut) {
     if (isFallback) *isFallback = false;
     if (renderedModeIdOut) *renderedModeIdOut = "";
+#if EPD_BPP >= 2
+    // 上一帧如果没走完（拉到了图但没显示就退出），标志会残留。
+    // 不清掉的话下一帧 BMP 会被当成「已写进面板」跳过绘制，屏幕停在旧内容上。
+    if (useStreamedPanel) {
+#if defined(EPD_PANEL_398_NZ07)
+        epdStream2bppAbort();
+#endif
+        useStreamedPanel = false;
+    }
+    useColorBuf = false;
+#endif
     if (!ensureDeviceToken()) return false;
     float v = readBatteryVoltage();
     String mac = WiFi.macAddress();
@@ -646,8 +655,12 @@ bool fetchBMP(bool nextMode, bool *isFallback, String *renderedModeIdOut) {
 #else
     const int colorCapability = 2;
 #endif
-    String url = cfgServer + "/api/render?v=" + String(v, 2)
-               + "&mac=" + mac + "&rssi=" + String(rssi)
+    // 读数不可信时（引脚悬空 / 没装电池）不带 v，让后端用默认值，
+    // 否则会被算成 0% 并画成红色空电池，看起来像快没电了。
+    String vParam = "";
+    if (v > 0.0f) vParam = "v=" + String(v, 2) + "&";
+    String url = cfgServer + "/api/render?" + vParam
+               + "mac=" + mac + "&rssi=" + String(rssi)
                + "&refresh_min=" + String(effectiveRefreshMin)
                + "&w=" + String(W) + "&h=" + String(H)
                + "&bpp=" + String(EPD_BPP)

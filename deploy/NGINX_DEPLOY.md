@@ -40,7 +40,11 @@
 
 只需改一处：
 
-- `proxy_pass http://127.0.0.1:8080;` → 后端 Python 项目实际端口
+- `proxy_pass http://127.0.0.1:3010;` → 后端 Python 项目实际端口
+
+`proxy_pass` 后面**不要加斜杠**。后端路由本身就是 `app.include_router(router, prefix="/api")`，
+即真实路径是 `/api/render`、`/api/device/{mac}/heartbeat`；写成 `http://127.0.0.1:3010/;`
+会把 `/api` 前缀吃掉，全部 404。
 
 ### 2. 配前端环境变量（可选，视场景）
 
@@ -91,3 +95,32 @@ nginx -s reload
   流式输出不卡顿），并把 `client_max_body_size` 放宽到 32m。
 - **域名**：前端站点 `server_name`、后端 `INKSIGHT_ALLOWED_HOSTS`、
   `INKSIGHT_CORS_ORIGINS` 三处要保持一致，用你的真实部署域名。
+
+---
+
+## 五、唯一需要单独放行的接口
+
+`/api/` 全部转给后端之后，前端 32 个 Next API 路由里有 **31 个**在后端有同名实现
+（纯粹是转发 + 透传 Authorization/Cookie/X-Device-Token），唯一的例外是：
+
+```
+GET /api/firmware/download?url=<github release 地址>
+```
+
+这是 **Next 自己实现**的（校验必须是 GitHub 域名 → 再拉取转发），后端只有
+`/api/firmware/download/{version}`，签名对不上。网页刷机页 `/flash` 就是靠它下载
+`.bin` 的，被后端接走就会 404。
+
+所以要在 `location /api/` **前面**加一个精确匹配把它抢回来：
+
+```nginx
+location = /api/firmware/download {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+`location = ` 是精确匹配，优先级高于 `location /api/` 这个前缀匹配，位置写在哪都行。

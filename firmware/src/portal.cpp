@@ -256,7 +256,7 @@ void startCaptivePortal() {
     webServer.on("/info", HTTP_GET, []() {
         float v = readBatteryVoltage();
         String json = "{\"mac\":\"" + WiFi.macAddress() + "\",";
-        json += "\"battery\":\"" + String(v, 2) + "V\",";
+        json += "\"battery\":\"" + (v > 0.0f ? String(v, 2) + "V" : String("--")) + "\",";
         json += "\"server_url\":\"" + cfgServer + "\"}";
         webServer.send(200, "application/json", json);
     });

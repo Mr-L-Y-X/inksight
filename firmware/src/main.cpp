@@ -348,6 +348,23 @@ static uint32_t computeChecksum(const uint8_t *buf, int len) {
     return sum;
 }
 
+// 一帧落地的收尾动作：写离线缓存 + 算出用于去重的校验和。
+// 2bpp 帧根本不会填 imgBuf（NZ07 流式路径连 colorBuf 都没有），
+// 所以不能无条件 cacheSave(imgBuf)/computeChecksum(imgBuf)：
+// 那样会把空缓冲写成离线缓存，去重也永远算出同一个值。
+static uint32_t commitFetchedFrame() {
+#if EPD_BPP >= 2
+    if (useStreamedPanel) {
+        return streamedPanelChecksum;   // 下载时已经边收边累加
+    }
+    if (useColorBuf && colorBuf) {
+        return computeChecksum(colorBuf, COLOR_BUF_LEN);
+    }
+#endif
+    cacheSave(imgBuf, IMG_BUF_LEN);
+    return computeChecksum(imgBuf, IMG_BUF_LEN);
+}
+
 // ── Forward declarations ────────────────────────────────────
 #if VOCAB_REVIEW_BUILD
 static uint8_t *vocabRatingParts = nullptr;
@@ -1024,10 +1041,6 @@ void setup() {
     ledInit();
     Serial.begin(115200);
     delay(3000);
-#if defined(BOARD_PROFILE_ESP32_C3_WROOM02) || defined(BOARD_PROFILE_SMT_WROOM32E) || defined(BOARD_PROFILE_YD_ESP32_S3_N16R8)
-    analogReadResolution(12);
-    analogSetAttenuation(ADC_11db);
-#endif
     Serial.println("\n=== InkSight Voice ===");
 
     loadConfig();
@@ -1163,10 +1176,6 @@ void setup() {
     } else {
         delay(300);
     }
-#if defined(BOARD_PROFILE_ESP32_C3_WROOM02) || defined(BOARD_PROFILE_SMT_WROOM32E) || defined(BOARD_PROFILE_YD_ESP32_S3_N16R8)
-    analogReadResolution(12);
-    analogSetAttenuation(ADC_11db);
-#endif
     Serial.println("\n=== InkSight ===");
 
     gpioInit();
@@ -1265,8 +1274,7 @@ void setup() {
 
     resetRetryCount();
 
-    cacheSave(imgBuf, IMG_BUF_LEN);
-    lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+    lastContentChecksum = commitFetchedFrame();
     syncNTP();
     Serial.println("Displaying image...");
     smartDisplay(imgBuf);
@@ -1293,8 +1301,7 @@ void setup() {
         if (exited) {
             ledFeedback("downloading");
             if (fetchBMP(true, nullptr, nullptr)) {
-                cacheSave(imgBuf, IMG_BUF_LEN);
-                lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+                lastContentChecksum = commitFetchedFrame();
                 syncNTP();
                 smartDisplay(imgBuf);
                 ledFeedback("success");
@@ -2296,26 +2303,7 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool partialVo
         }
         bool keepWiFiEffective = keepWiFi || aiChatRequested;
         if (fetched) {
-            bool hasRaw2bpp = false;
-#if EPD_BPP >= 2
-            hasRaw2bpp = useColorBuf || useStreamedPanel;
-#endif
-            if (!hasRaw2bpp) {
-                cacheSave(imgBuf, IMG_BUF_LEN);
-            }
-
-            uint32_t newChecksum = 0;
-#if EPD_BPP >= 2
-            if (useStreamedPanel) {
-                newChecksum = streamedPanelChecksum;
-            } else if (hasRaw2bpp && colorBuf) {
-                newChecksum = computeChecksum(colorBuf, COLOR_BUF_LEN);
-            } else {
-                newChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
-            }
-#else
-            newChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
-#endif
+            uint32_t newChecksum = commitFetchedFrame();
             if (!skipNtp) {
                 syncNTP();
             }
@@ -2356,8 +2344,7 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool partialVo
                     Serial.println("AI chat exited, showing next mode...");
                     ledFeedback("downloading");
                     if (fetchBMP(true, nullptr, nullptr)) {
-                        cacheSave(imgBuf, IMG_BUF_LEN);
-                        uint32_t newChecksum2 = computeChecksum(imgBuf, IMG_BUF_LEN);
+                        uint32_t newChecksum2 = commitFetchedFrame();
                         syncNTP();
                         smartDisplay(imgBuf);
                         lastContentChecksum = newChecksum2;
@@ -2388,8 +2375,7 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool partialVo
                             ctx.vocabReviewBackSide = false;
                         }
                     }
-                    cacheSave(imgBuf, IMG_BUF_LEN);
-                    uint32_t retryChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+                    uint32_t retryChecksum = commitFetchedFrame();
                     syncNTP();
                     smartDisplay(imgBuf);
                     lastContentChecksum = retryChecksum;

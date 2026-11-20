@@ -82,6 +82,15 @@
 #define PIN_RGB_LED -1
 #endif
 
+// ── Battery ADC ──────────────────────────────────────────────
+// 电池正极 ──10k──┬──10k── GND，中间点接 PIN_BAT_ADC，分压比 = (10k+10k)/10k = 2。
+// 换电阻时只改这里，别再去 readBatteryVoltage() 里乘系数。
+#ifndef BAT_ADC_DIVIDER
+#define BAT_ADC_DIVIDER 2.0f
+#endif
+// 分压点低于该值视为「没接分压/没装电池」：3.0V 电池也应该有 1.5V。
+#define BAT_ADC_MIN_PIN_MV 500
+
 // ── Display constants ────────────────────────────────────────
 // Default for 4.2" E-Paper (400x300, 1-bit).
 // Override via build flags: -D EPD_WIDTH=800 -D EPD_HEIGHT=480
