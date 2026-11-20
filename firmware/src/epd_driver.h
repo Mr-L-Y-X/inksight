@@ -21,6 +21,15 @@ void epdDisplayDeepClear(const uint8_t *image);
 // Full-screen display with pre-packed 2bpp data (4-color panels)
 void epdDisplay2bpp(const uint8_t *image2bpp);
 
+// Streaming 2bpp upload for row-addressed panels (398 NZ07).
+// Lets the caller push the frame into panel RAM while it is still downloading,
+// so the MCU never has to hold the full 106 KB frame buffer. This is *not*
+// partial refresh: the panel is refreshed once, full screen, by Flush().
+bool epdStream2bppBegin();
+void epdStream2bppRow(int y, const uint8_t *row2bpp);
+void epdStream2bppFlush();   // full-screen refresh + power off
+void epdStream2bppAbort();   // discard: restore window + power off, no refresh
+
 // Full-screen display with fast refresh (reduced flashing)
 void epdDisplayFast(const uint8_t *image);
 

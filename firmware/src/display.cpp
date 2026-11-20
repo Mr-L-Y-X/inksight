@@ -719,6 +719,16 @@ void showModePreview(const char *modeName) {
 static int refreshCount = 0;
 
 void smartDisplay(const uint8_t *image) {
+#if EPD_BPP >= 2 && defined(EPD_PANEL_398_NZ07)
+    if (useStreamedPanel) {
+        // 帧数据在下载时已经写进面板 RAM，这里只补一次整屏刷新。
+        Serial.printf("smartDisplay: streamed 2bpp refresh (cycle %d)\n", refreshCount);
+        epdStream2bppFlush();
+        useStreamedPanel = false;
+        refreshCount++;
+        return;
+    }
+#endif
 #if EPD_BPP >= 2
     if (useColorBuf && colorBuf) {
         Serial.printf("smartDisplay: 2bpp color (cycle %d)\n", refreshCount);

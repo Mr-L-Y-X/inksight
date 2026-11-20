@@ -3,6 +3,7 @@
 #include "storage.h"
 #include "certs.h"
 #include "audio.h"
+#include "epd_driver.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -603,6 +604,31 @@ bool fetchFocusAlertBMP() {
 
 // ── Fetch BMP from backend ──────────────────────────────────
 
+#if EPD_BPP >= 2 && defined(EPD_PANEL_398_NZ07)
+// 原始 2bpp 帧直接流进面板 RAM：每读 192 字节（一行＝768px @2bpp）就下发一行，
+// MCU 侧只需要一个栈上的行缓冲。原来的做法是先 malloc 105,984 字节再读，
+// 而这一步发生在 HTTPS 会话还开着的时候，TLS 收发缓冲把堆切碎后必然失败。
+static bool stream2bppToPanel(WiFiClient *stream, uint32_t *checksumOut) {
+    if (!epdStream2bppBegin()) {
+        Serial.println("[RENDER] panel stream begin failed");
+        return false;
+    }
+    uint8_t row[EPD_WIDTH / 4];
+    uint32_t sum = 0;
+    for (int y = 0; y < EPD_HEIGHT; y++) {
+        if (!readExact(stream, row, sizeof(row))) {
+            Serial.printf("[RENDER] panel stream read failed at row %d/%d\n", y, EPD_HEIGHT);
+            epdStream2bppAbort();
+            return false;
+        }
+        for (size_t i = 0; i < sizeof(row); i++) sum += row[i];
+        epdStream2bppRow(y, row);
+    }
+    *checksumOut = sum;
+    return true;
+}
+#endif
+
 bool fetchBMP(bool nextMode, bool *isFallback, String *renderedModeIdOut) {
     if (isFallback) *isFallback = false;
     if (renderedModeIdOut) *renderedModeIdOut = "";
@@ -705,6 +731,21 @@ bool fetchBMP(bool nextMode, bool *isFallback, String *renderedModeIdOut) {
 
 #if EPD_BPP >= 2
         if (contentLen == COLOR_BUF_LEN) {
+#if defined(EPD_PANEL_398_NZ07)
+            uint32_t streamSum = 0;
+            if (!stream2bppToPanel(stream, &streamSum)) {
+                Serial.println("2bpp streaming to panel failed");
+                http.end();
+                return false;
+            }
+            useColorBuf = false;
+            useStreamedPanel = true;
+            streamedPanelChecksum = streamSum;
+            http.end();
+            Serial.printf("2BPP streamed to panel  %d bytes\n", COLOR_BUF_LEN);
+            lastHeartbeatAt = millis();
+            return true;
+#else
             if (!ensureColorBuf()) {
                 Serial.println("colorBuf alloc failed, skip 2bpp");
                 http.end();
@@ -720,6 +761,7 @@ bool fetchBMP(bool nextMode, bool *isFallback, String *renderedModeIdOut) {
             Serial.printf("2BPP OK  %d bytes\n", COLOR_BUF_LEN);
             lastHeartbeatAt = millis();
             return true;
+#endif
         }
         Serial.printf("Not raw 2bpp (%d bytes), fallback to BMP\n", contentLen);
         useColorBuf = false;

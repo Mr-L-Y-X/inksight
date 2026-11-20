@@ -38,6 +38,8 @@ uint8_t imgBuf[IMG_BUF_LEN];
 #if EPD_BPP >= 2
 uint8_t *colorBuf = nullptr;
 bool useColorBuf = false;
+bool useStreamedPanel = false;
+uint32_t streamedPanelChecksum = 0;
 
 bool ensureColorBuf() {
     if (colorBuf) return true;
@@ -2296,7 +2298,7 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool partialVo
         if (fetched) {
             bool hasRaw2bpp = false;
 #if EPD_BPP >= 2
-            hasRaw2bpp = useColorBuf;
+            hasRaw2bpp = useColorBuf || useStreamedPanel;
 #endif
             if (!hasRaw2bpp) {
                 cacheSave(imgBuf, IMG_BUF_LEN);
@@ -2304,9 +2306,13 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool partialVo
 
             uint32_t newChecksum = 0;
 #if EPD_BPP >= 2
-            newChecksum = (hasRaw2bpp && colorBuf)
-                ? computeChecksum(colorBuf, COLOR_BUF_LEN)
-                : computeChecksum(imgBuf, IMG_BUF_LEN);
+            if (useStreamedPanel) {
+                newChecksum = streamedPanelChecksum;
+            } else if (hasRaw2bpp && colorBuf) {
+                newChecksum = computeChecksum(colorBuf, COLOR_BUF_LEN);
+            } else {
+                newChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+            }
 #else
             newChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
 #endif
@@ -2315,6 +2321,13 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool partialVo
             }
             if (newChecksum == lastContentChecksum && !nextMode) {
                 Serial.println("Content unchanged, skipping display refresh");
+#if EPD_BPP >= 2 && defined(EPD_PANEL_398_NZ07)
+                if (useStreamedPanel) {
+                    // 内容没变：面板 RAM 里写入的就是同一份数据，直接关电不刷新。
+                    epdStream2bppAbort();
+                    useStreamedPanel = false;
+                }
+#endif
                 ledFeedback("success");
             } else {
                 if (partialVocabRating && ctx.currentRenderedModeId.equalsIgnoreCase(VOCAB_REVIEW_MODE_ID)) {

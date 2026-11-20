@@ -117,6 +117,11 @@ extern uint8_t imgBuf[];
 extern uint8_t *colorBuf;
 extern bool useColorBuf;
 bool ensureColorBuf();
+// Set when the 2bpp frame was pushed straight into panel RAM while downloading
+// (no 106 KB heap buffer). The panel still needs one full-screen refresh, which
+// smartDisplay() performs; streamedPanelChecksum carries the dedupe value.
+extern bool useStreamedPanel;
+extern uint32_t streamedPanelChecksum;
 #endif
 
 // ── Refresh strategy ─────────────────────────────────────────

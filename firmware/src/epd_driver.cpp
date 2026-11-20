@@ -959,6 +959,37 @@ void epdDisplay2bpp(const uint8_t *image2bpp) {
     epd398Refresh();
 }
 
+// ── 流式下发 (边下载边写面板 RAM) ───────────────────────────
+// 面板本来就必须逐行写 (0x83 设窗 → 0x10 写 192B)，所以完全不需要在 MCU 侧
+// 先攒齐 106KB 再开始。调用方每拿到一行就交给 epdStream2bppRow()，
+// 全部写完再 epdStream2bppFlush() 触发一次整屏刷新（波形与原来一致）。
+
+bool epdStream2bppBegin() {
+    epdInit();
+    return _initialized;
+}
+
+void epdStream2bppRow(int y, const uint8_t *row2bpp) {
+    if (y < 0 || y >= EPD_HEIGHT) return;
+    epd398SetScanRow(epd398MapRow(y));
+    epd398Cmd(0x10);
+    epd398Data(row2bpp, EPD_398_ROW_BYTES);
+}
+
+void epdStream2bppFlush() {
+    epd398RestoreWindow();
+    epd398Refresh();
+}
+
+void epdStream2bppAbort() {
+    epd398RestoreWindow();
+    if (_initialized) {
+        epd398Cmd(0x02); epd398Data1(0x00);   // Power Off
+        epd398WaitBusy(5000);
+        _initialized = false;
+    }
+}
+
 void epdDisplayFast(const uint8_t *image) { epdDisplay(image); }
 
 void epdDisplayDeepClear(const uint8_t *image) { epdDisplay(image); }
